@@ -1,0 +1,160 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BARAKA Integrasi OPS</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f2f7f4;
+      color: #193c30;
+      font: 14px Arial, sans-serif;
+    }
+    header {
+      padding: 22px;
+      background: #073d2c;
+      color: white;
+    }
+    h1 { margin: 0; font-size: 23px; }
+    main { max-width: 1050px; margin: auto; padding: 22px; }
+    .card {
+      background: white;
+      padding: 22px;
+      margin-bottom: 16px;
+      border: 1px solid #dce8e1;
+      border-radius: 12px;
+    }
+    .muted { color: #64786f; }
+    .grid { display: flex; gap: 12px; flex-wrap: wrap; }
+    .stat {
+      flex: 1;
+      min-width: 170px;
+      background: #eef6f1;
+      padding: 16px;
+      border-radius: 9px;
+    }
+    .stat strong { display: block; margin-top: 8px; }
+    button {
+      background: #0e6c50;
+      color: white;
+      border: 0;
+      border-radius: 7px;
+      padding: 11px 16px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .5; cursor: wait; }
+    input { padding: 10px; border: 1px solid #cadbd0; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .error { color: #b42332; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BARAKA PeopleOS</h1>
+    <p>Integrasi OPS, Bonus Standby & Absensi</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Dashboard Integrasi</h2>
+      <div class="grid">
+        <div class="stat">
+          Area
+          <strong>Pontianak</strong>
+        </div>
+        <div class="stat">
+          Tanggal Pengujian
+          <strong>29 Oktober 2026</strong>
+        </div>
+        <div class="stat">
+          Status Backend
+          <strong id="status">Memeriksa...</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Koneksi Google Apps Script</h2>
+      <p class="muted">
+        Pemeriksaan ini hanya membaca konfigurasi.
+        Tidak mengubah data Bonus Standby atau Absensi.
+      </p>
+      <button id="test" onclick="periksa()">
+        Tes Koneksi
+      </button>
+      <p id="hasil">Menunggu pemeriksaan.</p>
+    </section>
+
+    <section class="card">
+      <h2>Cabang Terdaftar</h2>
+      <div id="cabang">Memuat data...</div>
+    </section>
+
+    <section class="card">
+      <h2>Log Diagnostik</h2>
+      <pre id="log">Belum ada aktivitas.</pre>
+    </section>
+  </main>
+
+  <script>
+    function tampilkanError(err) {
+      const pesan = err && err.message
+        ? err.message : String(err);
+      document.getElementById('status').textContent = 'Gagal';
+      document.getElementById('hasil').textContent = pesan;
+      document.getElementById('hasil').className = 'error';
+      document.getElementById('log').textContent = pesan;
+      document.getElementById('test').disabled = false;
+    }
+
+    function periksa() {
+      const tombol = document.getElementById('test');
+      tombol.disabled = true;
+      document.getElementById('hasil').textContent =
+        'Menghubungkan ke backend...';
+
+      if (!window.google || !google.script ||
+          !google.script.run) {
+        tampilkanError('google.script.run tidak tersedia.');
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(function(data) {
+          tombol.disabled = false;
+          document.getElementById('status').textContent =
+            'Terhubung';
+          document.getElementById('hasil').textContent =
+            'Koneksi backend berhasil.';
+
+          const daftar = document.getElementById('cabang');
+          daftar.replaceChildren();
+
+          const branches = data.branches || [];
+          if (!branches.length) {
+            daftar.textContent =
+              'Belum ada cabang yang dikonfigurasi.';
+          } else {
+            branches.forEach(function(c) {
+              const p = document.createElement('p');
+              p.textContent =
+                c.branchName || c.branchId || 'Cabang';
+              daftar.appendChild(p);
+            });
+          }
+
+          document.getElementById('log').textContent =
+            JSON.stringify(data, null, 2);
+        })
+        .withFailureHandler(tampilkanError)
+        .getOpsBootstrap();
+    }
+
+    window.addEventListener('load', periksa);
+  </script>
+</body>
+</html>
