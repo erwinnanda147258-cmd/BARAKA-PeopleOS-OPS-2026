@@ -52,7 +52,8 @@ function previewBonusStandbyPontianakBarat(payload) {
       throw new Error('Bulan pada BONUS!B2 adalah ' + monthText + ', tetapi file OPS bertanggal ' + expectedMonth + '. Periksa periode workbook.');
     }
   }
-  const plan = bonusPreviewInspectTarget_(sheet, source.records, ss.getSpreadsheetTimeZone ? ss.getSpreadsheetTimeZone() : 'Asia/Jakarta', dateISO);
+  const config = loadConfig_(); // Membaca mapping tersimpan; tidak menyimpan konfigurasi.
+  const plan = bonusPreviewInspectTarget_(sheet, source.records, ss.getSpreadsheetTimeZone ? ss.getSpreadsheetTimeZone() : 'Asia/Jakarta', dateISO, config.destinationMap || {});
   const report = {
     ok: true,
     mode: 'READ_ONLY',
@@ -75,6 +76,8 @@ function previewBonusStandbyPontianakBarat(payload) {
     duplicates: plan.existingSame.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
     conflicts: plan.conflicts.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
     warnings: plan.warnings,
+    diagnostics: plan.diagnostics.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
+    diagnosticsTruncated: plan.diagnostics.length > BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS,
     note: 'Hanya membaca Drive dan Google Sheets. Tidak ada perubahan sel, rumus, format, atau tab.'
   };
   return report;
@@ -139,11 +142,15 @@ function bonusPreviewNumber_(value, decimal) {
   if (!s || s === '-' || s === '--') return 0;
   if (!/^-?[\d.,]+$/.test(s)) throw new Error('Angka tidak valid: ' + value);
   let n;
-  if (decimal) {
+  if (s.includes(',') && s.includes('.')) {
+    // Pemisah ribuan dan desimal harus membentuk grup yang sah.
+    if (/^-?\d{1,3}(?:\.\d{3})+,\d+$/.test(s)) n = Number(s.replace(/\./g, '').replace(',', '.'));
+    else if (/^-?\d{1,3}(?:,\d{3})+\.\d+$/.test(s)) n = Number(s.replace(/,/g, ''));
+    else throw new Error('Format angka ambigu: ' + value);
+  } else if (decimal) {
     // Khusus M3: 0,053 dan 0.053 harus menjadi 0.053 (bukan 53).
-    if (s.includes(',') && s.includes('.')) {
-      n = Number(s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, ''));
-    } else n = Number(s.replace(',', '.'));
+    if (!/^-?\d+(?:[.,]\d+)?$/.test(s)) throw new Error('Format angka ambigu: ' + value);
+    n = Number(s.replace(',', '.'));
   } else if (/^-?\d{1,3}([.,]\d{3})+$/.test(s)) {
     n = Number(s.replace(/[.,]/g, ''));
   } else if (/^-?\d+$/.test(s)) {
@@ -155,12 +162,16 @@ function bonusPreviewNumber_(value, decimal) {
   return n;
 }
 function bonusPreviewDate_(value) {
-  const s = String(value || '').trim();
-  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (m) return m[1] + '-' + m[2] + '-' + m[3];
-  m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
-  if (m) return m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
-  return '';
+  const s = String(value == null ? '' : value).trim();
+  if (!s || s === '-') return '';
+  let iso = '';
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$/);
+  if (m) iso = m[1] + '-' + m[2] + '-' + m[3];
+  m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);
+  if (m) iso = m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+  if (!iso) throw new Error('Format tanggal tidak dikenali: ' + s);
+  bonusPreviewAssertDate_(iso);
+  return iso;
 }
 function bonusPreviewParseDatot_(html, fileName) {
   if (!/<table\b/i.test(html)) throw new Error('File .xls bukan tabel HTML ekspor OPS.');
@@ -174,9 +185,25 @@ function bonusPreviewParseDatot_(html, fileName) {
   const records = [];
   rows.forEach(function (row) {
     const raw = row.match(/<(?:td|th)\b[^>]*>[\s\S]*?<\/(?:td|th)>/gi) || [];
-    if (raw.length !== 18) return;
     const c = raw.map(function (cell) { return bonusPreviewCellText_(cell.replace(/^<(?:td|th)\b[^>]*>/i, '').replace(/<\/(?:td|th)>$/i, '')); });
-    if (!/^[A-Z0-9-]+\/[A-Z0-9]+$/i.test(c[4])) return;
+    const isReceipt = function (v) { return /^[A-Z0-9-]+\/[A-Z0-9]+$/i.test(v); };
+    if (raw.length !== 18) {
+      if (c.some(isReceipt)) throw new Error('Baris resi Datot tidak memiliki 18 kolom; mapping A:R belum dapat dibuktikan.');
+      return;
+    }
+    if (!isReceipt(c[4])) {
+      const header = c.map(function (v) { return bonusPreviewNormText_(v).replace(/[^A-Z0-9]/g, ''); });
+      if (header.some(function (v) { return /^(?:NO|NOMOR)?RESI$/.test(v); })) {
+        if (!/^(?:NO|NOMOR)?RESI$/.test(header[4]) || !header[6].includes('TUJUAN') || !header[17].includes('CAB')) {
+          throw new Error('Urutan kolom Datot berubah; mapping E=Resi, G=Tujuan, R=Cab tidak sesuai.');
+        }
+      }
+      if (c.some(isReceipt)) throw new Error('Nomor resi Datot tidak berada pada kolom E.');
+      return;
+    }
+    if (raw.some(function (cell) { return /\b(?:rowspan|colspan)\s*=\s*["']?(?:[2-9]|[1-9]\d)/i.test(cell.split('>')[0]); })) {
+      throw new Error('Baris Datot dengan resi memakai rowspan/colspan; mapping A:R belum dapat dibuktikan.');
+    }
     const parts = c[16].split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
     records.push({
       no: bonusPreviewNumber_(c[0], false), masuk: bonusPreviewDate_(c[1]), berangkat: bonusPreviewDate_(c[2]),
@@ -185,14 +212,16 @@ function bonusPreviewParseDatot_(html, fileName) {
       tunai: bonusPreviewNumber_(c[10], false), tujuanBayar: bonusPreviewNumber_(c[11], false),
       vaPengirim: bonusPreviewNumber_(c[12], false), vaTujuan: bonusPreviewNumber_(c[13], false),
       via: c[14] === '-' ? '' : c[14], ot: c[15] === '-' ? '' : c[15],
-      statusAtas: parts[0] || '', statusBawah: parts.slice(1).join(' '), cab: c[17].toUpperCase()
+      statusAtas: parts[0] || '', statusBawah: parts.slice(1).join(' '), cab: c[17].toUpperCase(),
+      sourceValues: c
     });
   });
   if (!records.length) throw new Error('Tidak ada resi yang terbaca. Format file OPS mungkin berubah.');
   const seen = {};
   records.forEach(function (r) {
-    if (!r.noResi || seen[r.noResi]) throw new Error('Nomor resi kosong atau duplikat dalam file: ' + r.noResi);
-    seen[r.noResi] = true;
+    const key = bonusPreviewNormText_(r.noResi);
+    if (!key || seen[key]) throw new Error('Nomor resi kosong atau duplikat dalam file: ' + r.noResi);
+    seen[key] = true;
   });
   const total = records.reduce(function (s, r) { return s + r.tunai + r.tujuanBayar + r.vaPengirim + r.vaTujuan; }, 0);
   const headerMatch = allText.match(/Total\s+Omset\s+Barang\s*:\s*Rp\.?\s*([\d.,]+)/i);
@@ -210,36 +239,118 @@ function bonusPreviewNormText_(value) {
   return String(value == null ? '' : value).trim().replace(/\s+/g, ' ').toUpperCase();
 }
 function bonusPreviewNormDate_(value, display, timezone) {
-  if (value instanceof Date && !isNaN(value.getTime())) return Utilities.formatDate(value, timezone, 'yyyy-MM-dd');
-  return bonusPreviewDate_(display || value);
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) throw new Error('Tanggal tidak valid.');
+    return Utilities.formatDate(value, timezone, 'yyyy-MM-dd');
+  }
+  // Nilai numerik Sheets adalah serial kalender, bukan timestamp Unix.
+  if (typeof value === 'number') {
+    if (!isFinite(value) || value < 1 || value > 2958465) throw new Error('Serial tanggal tidak valid.');
+    return new Date(Date.UTC(1899, 11, 30) + Math.floor(value) * 86400000).toISOString().slice(0, 10);
+  }
+  // Nilai mentah lebih otoritatif daripada format tampilan (misalnya dd/MM).
+  return bonusPreviewDate_(value);
 }
 function bonusPreviewNormNumber_(value, decimal) {
-  if (typeof value === 'number') return value;
+  if (value == null || (typeof value === 'string' && !value.trim())) throw new Error('Sel kosong belum membuktikan nilai nol.');
+  if (typeof value === 'number') {
+    if (!isFinite(value)) throw new Error('Angka tidak valid.');
+    return value;
+  }
+  if (typeof value !== 'string') throw new Error('Tipe nilai bukan angka.');
   return bonusPreviewNumber_(value, decimal);
 }
-function bonusPreviewCompare_(r, numberRow, dataRow, displayNumberRow, displayDataRow, timezone) {
-  const diffs = [];
-  function text(label, col, expected) {
-    if (bonusPreviewNormText_(dataRow[col - 1]) !== bonusPreviewNormText_(expected)) diffs.push(label);
-  }
-  function num(label, col, expected, decimal) {
-    let actual;
-    try { actual = bonusPreviewNormNumber_(dataRow[col - 1], decimal); }
-    catch (e) { diffs.push(label); return; }
-    if (Math.abs(actual - expected) > 0.0000001) diffs.push(label);
-  }
-  if (bonusPreviewNormDate_(dataRow[1], displayDataRow[1], timezone) !== r.masuk) diffs.push('Tanggal resi');
-  if (bonusPreviewNormDate_(dataRow[2], displayDataRow[2], timezone) !== r.berangkat) diffs.push('Tanggal berangkat');
-  text('Pengirim', 4, r.pengirim); text('Penerima', 6, r.penerima); text('Tujuan', 7, r.tujuan);
-  num('Koli', 8, r.koli, false); num('Kg', 9, r.kg, false); num('M3', 10, r.m3, true);
-  num('Tunai', 11, r.tunai, false); num('Bayar tujuan', 12, r.tujuanBayar, false);
-  num('VA pengirim', 13, r.vaPengirim, false); num('VA tujuan', 14, r.vaTujuan, false);
-  text('Via', 15, r.via); text('OT', 16, r.ot); text('Kode cabang', 18, r.cab);
-  if (bonusPreviewNormText_(numberRow[16]) !== bonusPreviewNormText_(r.statusAtas) ||
-      bonusPreviewNormText_(dataRow[16]) !== bonusPreviewNormText_(r.statusBawah)) diffs.push('Status');
-  return diffs;
+function bonusPreviewDiagnosticValue_(value) {
+  if (value instanceof Date) return isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString();
+  return value == null ? '' : value;
 }
-function bonusPreviewInspectTarget_(sheet, records, timezone, dateISO) {
+// Semua field memakai posisi Datot A:R. A hanya nomor urut; E kunci resi.
+function bonusPreviewFields_() {
+  return [
+    ['masuk', 'Tanggal resi', 2, 'date'], ['berangkat', 'Tanggal berangkat', 3, 'date'],
+    ['pengirim', 'Pengirim', 4, 'text'], ['noResi', 'Nomor resi', 5, 'text'],
+    ['penerima', 'Penerima', 6, 'text'], ['tujuan', 'Tujuan', 7, 'text'],
+    ['koli', 'Koli', 8, 'number'], ['kg', 'Kg', 9, 'number'], ['m3', 'M3', 10, 'decimal'],
+    ['tunai', 'Tunai', 11, 'number'], ['tujuanBayar', 'Bayar tujuan', 12, 'number'],
+    ['vaPengirim', 'VA pengirim', 13, 'number'], ['vaTujuan', 'VA tujuan', 14, 'number'],
+    ['via', 'Via', 15, 'optional'], ['ot', 'OT', 16, 'optional'], ['cab', 'Kode cabang', 18, 'text']
+  ];
+}
+function bonusPreviewCompare_(r, numberRow, dataRow, displayNumberRow, displayDataRow, timezone, cells, destinationMap) {
+  const details = [];
+  function compare(key, label, col, kind, expected, cell, sourceColumn) {
+    let actual = null, normalizedExpected = null, error = '';
+    const normalize = function (value) {
+      if (kind === 'date') return bonusPreviewNormDate_(value, '', timezone);
+      if (kind === 'number' || kind === 'decimal') return bonusPreviewNormNumber_(value, kind === 'decimal');
+      if (kind === 'optional' && String(value == null ? '' : value).trim() === '-') return '';
+      const normalized = bonusPreviewNormText_(value);
+      if (key === 'tujuan' && Object.prototype.hasOwnProperty.call(destinationMap || {}, normalized)) {
+        return bonusPreviewNormText_(destinationMap[normalized]);
+      }
+      return normalized;
+    };
+    try {
+      if ((kind === 'number' || kind === 'decimal') && r.sourceValues && !String(r.sourceValues[col - 1]).trim()) {
+        throw new Error('Angka sumber kosong belum membuktikan nilai nol.');
+      }
+      normalizedExpected = normalize(expected); actual = normalize(cell.value);
+    }
+    catch (e) { error = e.message || String(e); }
+    const numeric = kind === 'number' || kind === 'decimal';
+    // Toleransi hanya untuk noise floating point; bukan pembulatan tampilan.
+    const equal = !error && (numeric ? Math.abs(actual - normalizedExpected) <= 1e-9 : actual === normalizedExpected);
+    details.push({ field: label, sourceColumn: sourceColumn || String.fromCharCode(64 + col),
+      sourceValue: r.sourceValues ? r.sourceValues[col - 1] : bonusPreviewDiagnosticValue_(r[key]),
+      expectedValue: bonusPreviewDiagnosticValue_(expected), targetCell: cell.a1, mergedRange: cell.merge || '',
+      targetValue: bonusPreviewDiagnosticValue_(cell.value), targetDisplay: cell.display,
+      sourceNormalized: normalizedExpected, targetNormalized: actual, equal: equal, error: error });
+  }
+  bonusPreviewFields_().forEach(function (f) {
+    let expected = r[f[0]];
+    if (f[0] === 'tujuan') {
+      const code = bonusPreviewNormText_(expected);
+      if (Object.prototype.hasOwnProperty.call(destinationMap || {}, code)) expected = destinationMap[code];
+    }
+    const cell = cells ? cells[f[2] - 1] : { value: dataRow[f[2] - 1], display: displayDataRow[f[2] - 1], a1: String.fromCharCode(64 + f[2]) };
+    // Nomor resi pada template berada di baris atas.
+    if (!cells && f[0] === 'noResi') cell.value = numberRow[4];
+    compare(f[0], f[1], f[2], f[3], expected, cell);
+  });
+  const top = cells ? cells.statusTop : { value: numberRow[16], display: displayNumberRow[16], a1: 'Q atas' };
+  const bottom = cells ? cells.statusBottom : { value: dataRow[16], display: displayDataRow[16], a1: 'Q bawah' };
+  if (top.merge && top.merge === bottom.merge) {
+    compare('statusAtas', 'Status', 17, 'text', [r.statusAtas, r.statusBawah].filter(Boolean).join(' '), top, 'Q (atas + bawah)');
+  } else {
+    compare('statusAtas', 'Status atas', 17, 'text', r.statusAtas, top, 'Q (atas)');
+    compare('statusBawah', 'Status bawah', 17, 'text', r.statusBawah, bottom, 'Q (bawah)');
+  }
+  return { fields: details.filter(function (d) { return !d.equal; }).map(function (d) { return d.field; }), details: details };
+}
+// Resolve hanya merge yang benar-benar dilaporkan Sheets, tanpa menebak sel kosong.
+function bonusPreviewCellReader_(values, display, merges, firstRow) {
+  const byCell = Object.create(null);
+  merges.forEach(function (m) {
+    const lastRow = Math.min(firstRow + values.length, m.row + m.rows);
+    for (let row = Math.max(firstRow, m.row); row < lastRow; row++) {
+      for (let col = Math.max(1, m.col); col < Math.min(19, m.col + m.cols); col++) byCell[row + ':' + col] = m;
+    }
+  });
+  return function (row, col) {
+    let anchor = row, merge = '';
+    const m = byCell[row + ':' + col];
+    if (m) {
+      const slotTop = firstRow + Math.floor((row - firstRow) / 2) * 2;
+      if (m.cols !== 1 || m.row !== slotTop || m.rows !== 2) {
+        throw new Error('Merge ' + m.a1 + ' tidak sesuai satu kolom dalam satu pasangan baris resi.');
+      }
+      anchor = m.row; merge = m.a1;
+    }
+    return { value: values[anchor - firstRow][col - 1], display: display[anchor - firstRow][col - 1],
+      a1: String.fromCharCode(64 + col) + anchor, merge: merge };
+  };
+}
+function bonusPreviewInspectTarget_(sheet, records, timezone, dateISO, destinationMap) {
   const headers = sheet.getRange(2, 1, 2, 18).getDisplayValues();
   const norm = function (s) { return bonusPreviewNormText_(s).replace(/[^A-Z0-9]/g, ''); };
   if (!norm(headers[0][4]).includes('RESI') || !norm(headers[0][6]).includes('TUJUAN') ||
@@ -253,40 +364,47 @@ function bonusPreviewInspectTarget_(sheet, records, timezone, dateISO) {
   const values = range.getValues();
   const display = range.getDisplayValues();
   const formulas = range.getFormulas();
-  const existing = {};
+  const merges = range.getMergedRanges().map(function (m) {
+    return { row: m.getRow(), col: m.getColumn(), rows: m.getNumRows(), cols: m.getNumColumns(), a1: m.getA1Notation() };
+  });
+  const readCell = bonusPreviewCellReader_(values, display, merges, BARAKA_BONUS_PREVIEW.FIRST_NUMBER_ROW);
+  const existing = Object.create(null);
   let lastOccupiedSlot = -1;
   const warnings = [];
   for (let i = 0; i < maxSlots; i++) {
     const noRow = values[i * 2], dataRow = values[i * 2 + 1];
     const noDisplay = display[i * 2], dataDisplay = display[i * 2 + 1];
-    const resi = String(noRow[4] || '').trim();
+    const resi = bonusPreviewNormText_(noRow[4]);
 
-if (String(dataRow[4] || '').trim()) {
-  throw new Error(
-    'Struktur tidak sesuai: nomor resi ditemukan pada baris data ' +
-    (6 + i * 2) + '.'
-  );
-}
-
-if (!resi) continue;
-    const existingDate = bonusPreviewNormDate_(dataRow[1], dataDisplay[1], timezone);
+    if (String(dataRow[4] || '').trim()) {
+      throw new Error('Struktur tidak sesuai: nomor resi ditemukan pada baris data ' + (6 + i * 2) + '.');
+    }
+    if (!resi) continue;
+    const cells = [];
+    for (let col = 1; col <= 18; col++) cells.push(readCell(col === 5 ? 5 + i * 2 : 6 + i * 2, col));
+    cells.statusTop = readCell(5 + i * 2, 17);
+    cells.statusBottom = readCell(6 + i * 2, 17);
+    let existingDate = '';
+    try { existingDate = bonusPreviewNormDate_(cells[1].value, cells[1].display, timezone); }
+    catch (e) { /* Nilai tidak valid akan dilaporkan sebagai konflik per kolom. */ }
     if (existingDate && existingDate !== dateISO) {
       throw new Error('Tab tanggal ' + String(Number(dateISO.slice(-2))) + ' berisi resi ' + resi + ' bertanggal ' + existingDate + ', bukan ' + dateISO + '.');
     }
     lastOccupiedSlot = i;
     if (existing[resi]) {
       existing[resi].duplicated = true;
-    } else existing[resi] = { rowNumber: 5 + i * 2, dataRowNumber: 6 + i * 2, numberRow: noRow, dataRow: dataRow, displayNumberRow: noDisplay, displayDataRow: dataDisplay, duplicated: false };
+    } else existing[resi] = { rowNumber: 5 + i * 2, dataRowNumber: 6 + i * 2, numberRow: noRow, dataRow: dataRow, displayNumberRow: noDisplay, displayDataRow: dataDisplay, cells: cells, duplicated: false };
   }
-  const existingSame = [], conflicts = [], toPlace = [];
+  const existingSame = [], conflicts = [], toPlace = [], diagnostics = [];
   records.forEach(function (r) {
-    const old = existing[r.noResi];
+    const old = existing[bonusPreviewNormText_(r.noResi)];
     if (!old) { toPlace.push(r); return; }
     if (old.duplicated) {
       conflicts.push({ noResi: r.noResi, row: old.dataRowNumber, fields: ['Nomor resi ganda di sheet'] }); return;
     }
-    const diffs = bonusPreviewCompare_(r, old.numberRow, old.dataRow, old.displayNumberRow, old.displayDataRow, timezone);
-    if (diffs.length) conflicts.push({ noResi: r.noResi, row: old.dataRowNumber, fields: diffs });
+    const comparison = bonusPreviewCompare_(r, old.numberRow, old.dataRow, old.displayNumberRow, old.displayDataRow, timezone, old.cells, destinationMap);
+    diagnostics.push({ noResi: r.noResi, numberRow: old.rowNumber, dataRow: old.dataRowNumber, fields: comparison.details });
+    if (comparison.fields.length) conflicts.push({ noResi: r.noResi, row: old.dataRowNumber, fields: comparison.fields });
     else existingSame.push({ noResi: r.noResi, row: old.dataRowNumber });
   });
   const newRows = [];
@@ -298,9 +416,10 @@ if (!resi) continue;
       const numberRow = 5 + next * 2, dataRowNumber = numberRow + 1;
       const numberValue = String(noRow[0] == null ? '' : noRow[0]).trim();
       const numberOk = !numberValue || numberValue === String(next + 1);
-      const emptyData = dataRow.slice(1, 18).every(function (v) { return v === '' || v === null; });
+      for (let col = 1; col <= 18; col++) readCell(dataRowNumber, col); // Validasi batas merge slot.
+      const emptyData = noRow.slice(1, 18).concat(dataRow.slice(1, 18)).every(function (v) { return v === '' || v === null; });
       const emptyStatus = noRow[16] === '' || noRow[16] === null;
-      const formulasClear = !noFormulas[0] && !noFormulas[16] && dataFormulas.slice(1, 18).every(function (v) { return !v; });
+      const formulasClear = noFormulas.every(function (v) { return !v; }) && dataFormulas.every(function (v) { return !v; });
       if (numberOk && emptyData && emptyStatus && formulasClear) {
         // Jika A5:A6 digabung, itu masih aman; tidak ada penulisan pada tahap ini.
         newRows.push({ noResi: r.noResi, nomor: next + 1, barisNomor: numberRow, barisData: dataRowNumber,
@@ -319,5 +438,5 @@ if (!resi) continue;
   if (records.length && !toPlace.length) warnings.push('Seluruh resi sumber sudah ada pada tab tujuan. Tidak ada baris baru yang direncanakan.');
   if (conflicts.length) warnings.push('Resi yang sudah ada tetapi isinya berbeda tidak akan ditimpa. Periksa kolom yang ditandai.');
   if (newRows.length > BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS) warnings.push('Tampilan pratinjau dibatasi 80 baris; hitungan total tetap lengkap.');
-  return { newRows: newRows, existingSame: existingSame, conflicts: conflicts, warnings: warnings, slotsAvailable: maxSlots - lastOccupiedSlot - 1 };
+  return { diagnostics: diagnostics, newRows: newRows, existingSame: existingSame, conflicts: conflicts, warnings: warnings, slotsAvailable: maxSlots - lastOccupiedSlot - 1 };
 }

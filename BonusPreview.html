@@ -40,10 +40,11 @@ button{background:var(--green2);border:0;color:white;font:inherit;font-weight:70
 <div class="metric">Resi sumber<b id="total">0</b></div><div class="metric">Baris baru<b id="baru">0</b></div>
 <div class="metric">Sudah sama<b id="sama">0</b></div><div class="metric">Berbeda / konflik<b id="beda">0</b></div></div>
 <p id="source" class="muted small"></p><p id="summary" class="small"></p><div id="warnings" class="warn small"></div></section>
-<section class="card hidden" id="plan"><h2>3. Rencana penempatan resi baru</h2><p class="muted small">Baris nomor: A dan Q bagian atas. Baris data: B:R, dengan Q bagian bawah. S:Z tetap tidak disentuh.</p>
+<section class="card hidden" id="plan"><h2>3. Rencana penempatan resi baru</h2><p class="muted small">Pasangan baris dimulai 5/6, 7/8, dan seterusnya. Nilai sel merge dibaca dari anchor kiri atas; Q atas/bawah diperiksa terpisah kecuali digabung. S:Z tetap tidak disentuh.</p>
 <div class="table-wrap"><table><thead><tr><th>Resi</th><th>Baris nomor</th><th>Baris data</th><th>Tujuan</th><th>Kg</th><th>M3</th><th>Nominal</th><th>Status (atas / bawah)</th></tr></thead><tbody id="planRows"></tbody></table></div></section>
 <section class="card hidden" id="conflicts"><h2>4. Resi sudah ada tetapi berbeda</h2><p class="muted small">Tidak ada penimpaan. Perbedaan berikut harus diperiksa manual sebelum tahap penulisan diaktifkan.</p>
 <div class="table-wrap"><table><thead><tr><th>Resi</th><th>Baris yang ada</th><th>Kolom yang berbeda</th></tr></thead><tbody id="conflictRows"></tbody></table></div></section>
+<section class="card hidden" id="diagnostics"><h2>5. Diagnostik perbandingan per resi</h2><p class="muted small">Nilai sumber, nilai pembanding setelah mapping tersimpan, nilai mentah/tampilan tujuan, anchor merge, dan hasil normalisasi. Sel numerik kosong belum membuktikan nol. Diagnostik dibatasi 80 resi.</p><div id="diagnosticRows"></div></section>
 <section class="card"><span class="pill">Penulisan dinonaktifkan</span><p class="small muted">Tidak ada tombol impor pada versi ini. Setelah hasil preview sesuai, kita dapat menyiapkan versi commit dengan persetujuan eksplisit dan pengujian pada salinan spreadsheet.</p></section>
 </main>
 <script>
@@ -64,10 +65,21 @@ if(window.google&&google.script&&google.script.run){
 function clear(t){while(t.firstChild)t.removeChild(t.firstChild)}
 function addCell(tr,value){const td=document.createElement('td');td.textContent=String(value==null?'':value);tr.appendChild(td)}
 function showRows(id,rows,fields){const body=$(id);clear(body);rows.forEach(r=>{const tr=document.createElement('tr');fields.forEach(fn=>addCell(tr,fn(r)));body.appendChild(tr)})}
+function diagnosticValue(v){return v===''?'(kosong)':v==null?'(tidak tersedia)':String(v)}
+function showDiagnostics(rows){
+const body=$('diagnosticRows');clear(body);
+rows.forEach(r=>{
+const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent=r.noResi+' · baris '+r.numberRow+'/'+r.dataRow;details.appendChild(summary);
+const wrap=document.createElement('div');wrap.className='table-wrap';const table=document.createElement('table');const head=document.createElement('tr');
+['Kolom sumber / field','Sumber mentah','Pembanding','Sel tujuan / merge','Tujuan mentah','Tampilan tujuan','Normalisasi sumber / tujuan','Hasil'].forEach(x=>{const th=document.createElement('th');th.textContent=x;head.appendChild(th)});table.appendChild(head);
+(r.fields||[]).forEach(f=>{const tr=document.createElement('tr');[f.sourceColumn+' · '+f.field,diagnosticValue(f.sourceValue),diagnosticValue(f.expectedValue),f.targetCell+(f.mergedRange?' ['+f.mergedRange+']':''),diagnosticValue(f.targetValue),diagnosticValue(f.targetDisplay),diagnosticValue(f.sourceNormalized)+' / '+diagnosticValue(f.targetNormalized),f.error|| (f.equal?'Sama':'Berbeda')].forEach(x=>addCell(tr,x));tr.className=f.equal?'good':'bad';table.appendChild(tr)});
+wrap.appendChild(table);details.appendChild(wrap);body.appendChild(details);
+});
+}
 $('previewBtn').addEventListener('click',function(){
 const payload={dateISO:$('dateISO').value,branchFolderUrl:$('branchFolderUrl').value.trim(),bonusSpreadsheetUrl:$('bonusSpreadsheetUrl').value.trim(),fileUrl:$('fileUrl').value.trim()};
 $('previewBtn').disabled=true;$('message').textContent='Membaca file dan spreadsheet (tanpa menulis)...';$('message').className='muted';
-['result','plan','conflicts'].forEach(id=>$(id).classList.add('hidden'));
+['result','plan','conflicts','diagnostics'].forEach(id=>$(id).classList.add('hidden'));
 if(!window.google||!google.script||!google.script.run){$('message').textContent='Buka halaman ini melalui URL /dev?bonus=1 dari Apps Script.';$('message').className='bad';$('previewBtn').disabled=false;return}
 google.script.run.withSuccessHandler(function(r){
 $('previewBtn').disabled=false;$('message').textContent='Pratinjau selesai. Tidak ada data yang ditulis.';$('message').className='good';
@@ -76,6 +88,7 @@ $('source').textContent='Sumber: '+r.source.fileName+' | Tab tujuan: '+r.target.
 $('summary').textContent='Rencana '+r.summary.newRecords+' resi baru; '+r.summary.existingSame+' sudah identik; '+r.summary.existingDifferent+' memiliki perbedaan. Semua pemeriksaan bersifat baca saja.';
 $('warnings').textContent=(r.warnings||[]).join(' ');
 if(r.plannedRows.length){$('plan').classList.remove('hidden');showRows('planRows',r.plannedRows,[x=>x.noResi,x=>x.barisNomor,x=>x.barisData,x=>x.tujuan,x=>dec(x.kg),x=>dec(x.m3),x=>'Rp'+money(x.pembayaran),x=>x.statusAtas+' / '+x.statusBawah])}
+if((r.diagnostics||[]).length){$('diagnostics').classList.remove('hidden');showDiagnostics(r.diagnostics)}
 if(r.conflicts.length){$('conflicts').classList.remove('hidden');showRows('conflictRows',r.conflicts,[x=>x.noResi,x=>x.row,x=>x.fields.join(', ')])}
 }).withFailureHandler(function(e){$('previewBtn').disabled=false;$('message').textContent='Gagal: '+(e&&e.message?e.message:String(e));$('message').className='bad'}).previewBonusStandbyPontianakBarat(payload);
 });
