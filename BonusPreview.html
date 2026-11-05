@@ -38,12 +38,16 @@ button{background:var(--green2);border:0;color:white;font:inherit;font-weight:70
 </section>
 <section class="card hidden" id="result"><h2>2. Hasil validasi</h2><div class="metrics">
 <div class="metric">Resi sumber<b id="total">0</b></div><div class="metric">Baris baru<b id="baru">0</b></div>
-<div class="metric">Sudah sama<b id="sama">0</b></div><div class="metric">Berbeda / konflik<b id="beda">0</b></div></div>
+<div class="metric">Resi lama / B–P dilewati<b id="sama">0</b></div><div class="metric">Berbeda / konflik<b id="beda">0</b></div></div>
 <p id="source" class="muted small"></p><p id="summary" class="small"></p><div id="warnings" class="warn small"></div></section>
-<section class="card hidden" id="plan"><h2>3. Rencana penempatan resi baru</h2><p class="muted small">Pasangan baris dimulai 5/6, 7/8, dan seterusnya. Nilai sel merge dibaca dari anchor kiri atas; Q atas/bawah diperiksa terpisah kecuali digabung. S:Z tetap tidak disentuh.</p>
-<div class="table-wrap"><table><thead><tr><th>Resi</th><th>Baris nomor</th><th>Baris data</th><th>Tujuan</th><th>Kg</th><th>M3</th><th>Nominal</th><th>Status (atas / bawah)</th></tr></thead><tbody id="planRows"></tbody></table></div></section>
-<section class="card hidden" id="conflicts"><h2>4. Resi sudah ada tetapi berbeda</h2><p class="muted small">Tidak ada penimpaan. Perbedaan berikut harus diperiksa manual sebelum tahap penulisan diaktifkan.</p>
+<section class="card hidden" id="plan"><h2>3. Rencana penempatan resi baru</h2><p class="muted small">Pasangan baris dimulai 5/6, 7/8, dan seterusnya. Slot kosong ditentukan hanya dari B–P tanpa nilai/rumus; Q–R lama setelah reset diabaikan untuk penentuan slot. A tetap dipertahankan. Nilai sel merge dibaca dari anchor kiri atas; Q atas/bawah diperiksa terpisah kecuali digabung. S:Z tetap tidak disentuh.</p>
+<div class="table-wrap"><table><thead><tr><th>Resi</th><th>Baris nomor</th><th>Baris data</th><th>Tujuan</th><th>Kg</th><th>M3</th><th>Nominal</th><th>Status (atas / bawah)</th><th>Rencana sel B–P</th></tr></thead><tbody id="planRows"></tbody></table></div></section>
+<section class="card hidden" id="conflicts"><h2>4. Konflik yang perlu ditinjau</h2><p class="muted small">B–P yang sudah terisi atau berisi rumus tetap dilindungi. Perbedaan Q–R direncanakan terpisah; identitas resi ambigu dan rumus Q–R memblokir rencana Q–R.</p>
 <div class="table-wrap"><table><thead><tr><th>Resi</th><th>Baris yang ada</th><th>Kolom yang berbeda</th></tr></thead><tbody id="conflictRows"></tbody></table></div></section>
+<section class="card hidden" id="skipped"><h2>Resi lama: B–P dilewati</h2><div class="table-wrap"><table><thead><tr><th>Resi</th><th>Baris</th><th>Alasan</th></tr></thead><tbody id="skippedRows"></tbody></table></div></section>
+<section class="card hidden" id="qr"><h2>Rencana perubahan Q–R</h2><p class="muted small">Belum dijalankan. Status atas/bawah dan cabang mengikuti anchor merge aktual. Nomor A, data B–P resi lama, format, dan rumus dipertahankan.</p><div class="table-wrap"><table><thead><tr><th>Resi / jenis</th><th>Sel / merge</th><th>Field</th><th>Nilai lama</th><th>Nilai terbaru Datot</th></tr></thead><tbody id="qrRows"></tbody></table></div></section>
+<section class="card hidden" id="information"><h2>Informasi tanggal berangkat</h2><p class="muted small">Perbedaan ini tidak memperbarui tanggal pada spreadsheet tujuan.</p><div class="table-wrap"><table><thead><tr><th>Resi</th><th>Sel</th><th>Sumber</th><th>Tujuan</th><th>Catatan</th></tr></thead><tbody id="informationRows"></tbody></table></div></section>
+<section class="card hidden" id="slotIssues"><h2>Slot yang dilindungi</h2><div class="table-wrap"><table><thead><tr><th>Baris atas</th><th>Masalah</th></tr></thead><tbody id="slotIssueRows"></tbody></table></div></section>
 <section class="card hidden" id="diagnostics"><h2>5. Diagnostik perbandingan per resi</h2><p class="muted small">Nilai sumber, nilai pembanding setelah mapping tersimpan, nilai mentah/tampilan tujuan, anchor merge, dan hasil normalisasi. Sel numerik kosong belum membuktikan nol. Diagnostik dibatasi 80 resi.</p><div id="diagnosticRows"></div></section>
 <section class="card"><span class="pill">Penulisan dinonaktifkan</span><p class="small muted">Tidak ada tombol impor pada versi ini. Setelah hasil preview sesuai, kita dapat menyiapkan versi commit dengan persetujuan eksplisit dan pengujian pada salinan spreadsheet.</p></section>
 </main>
@@ -71,23 +75,27 @@ const body=$('diagnosticRows');clear(body);
 rows.forEach(r=>{
 const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent=r.noResi+' · baris '+r.numberRow+'/'+r.dataRow;details.appendChild(summary);
 const wrap=document.createElement('div');wrap.className='table-wrap';const table=document.createElement('table');const head=document.createElement('tr');
-['Kolom sumber / field','Sumber mentah','Pembanding','Sel tujuan / merge','Tujuan mentah','Tampilan tujuan','Normalisasi sumber / tujuan','Hasil'].forEach(x=>{const th=document.createElement('th');th.textContent=x;head.appendChild(th)});table.appendChild(head);
-(r.fields||[]).forEach(f=>{const tr=document.createElement('tr');[f.sourceColumn+' · '+f.field,diagnosticValue(f.sourceValue),diagnosticValue(f.expectedValue),f.targetCell+(f.mergedRange?' ['+f.mergedRange+']':''),diagnosticValue(f.targetValue),diagnosticValue(f.targetDisplay),diagnosticValue(f.sourceNormalized)+' / '+diagnosticValue(f.targetNormalized),f.error|| (f.equal?'Sama':'Berbeda')].forEach(x=>addCell(tr,x));tr.className=f.equal?'good':'bad';table.appendChild(tr)});
+['Kolom sumber / field','Sumber mentah','Pembanding','Sel tujuan / merge','Tujuan mentah','Tampilan tujuan','Normalisasi sumber / tujuan','Hasil','Kebijakan'].forEach(x=>{const th=document.createElement('th');th.textContent=x;head.appendChild(th)});table.appendChild(head);
+(r.fields||[]).forEach(f=>{const tr=document.createElement('tr');[f.sourceColumn+' · '+f.field,diagnosticValue(f.sourceValue),diagnosticValue(f.expectedValue),f.targetCell+(f.mergedRange?' ['+f.mergedRange+']':''),diagnosticValue(f.targetValue),diagnosticValue(f.targetDisplay),diagnosticValue(f.sourceNormalized)+' / '+diagnosticValue(f.targetNormalized),f.error|| (f.equal?'Sama':'Berbeda'),f.policy||''].forEach(x=>addCell(tr,x));tr.className=f.equal?'good':'bad';table.appendChild(tr)});
 wrap.appendChild(table);details.appendChild(wrap);body.appendChild(details);
 });
 }
 $('previewBtn').addEventListener('click',function(){
 const payload={dateISO:$('dateISO').value,branchFolderUrl:$('branchFolderUrl').value.trim(),bonusSpreadsheetUrl:$('bonusSpreadsheetUrl').value.trim(),fileUrl:$('fileUrl').value.trim()};
 $('previewBtn').disabled=true;$('message').textContent='Membaca file dan spreadsheet (tanpa menulis)...';$('message').className='muted';
-['result','plan','conflicts','diagnostics'].forEach(id=>$(id).classList.add('hidden'));
+['result','plan','conflicts','diagnostics','skipped','qr','information','slotIssues'].forEach(id=>$(id).classList.add('hidden'));
 if(!window.google||!google.script||!google.script.run){$('message').textContent='Buka halaman ini melalui URL /dev?bonus=1 dari Apps Script.';$('message').className='bad';$('previewBtn').disabled=false;return}
 google.script.run.withSuccessHandler(function(r){
 $('previewBtn').disabled=false;$('message').textContent='Pratinjau selesai. Tidak ada data yang ditulis.';$('message').className='good';
-$('result').classList.remove('hidden');$('total').textContent=money(r.source.recordCount);$('baru').textContent=money(r.summary.newRecords);$('sama').textContent=money(r.summary.existingSame);$('beda').textContent=money(r.summary.existingDifferent);
+$('result').classList.remove('hidden');$('total').textContent=money(r.source.recordCount);$('baru').textContent=money(r.summary.newRecords);$('sama').textContent=money(r.summary.skippedRecords);$('beda').textContent=money(r.summary.existingDifferent);
 $('source').textContent='Sumber: '+r.source.fileName+' | Tab tujuan: '+r.target.tabName+' | Total omzet: Rp'+money(r.source.totalOmset)+' | Total Kg: '+dec(r.source.totalKg)+' | Total M3: '+dec(r.source.totalM3);
-$('summary').textContent='Rencana '+r.summary.newRecords+' resi baru; '+r.summary.existingSame+' sudah identik; '+r.summary.existingDifferent+' memiliki perbedaan. Semua pemeriksaan bersifat baca saja.';
+$('summary').textContent='Rencana '+r.summary.newRecords+' resi baru; '+r.summary.existingSame+' sama setelah normalisasi; '+(r.summary.skippedRecords||0)+' resi lama dilewati pada B–P; '+r.summary.existingDifferent+' resi berkonflik; '+(r.summary.qrUpdateRecords||0)+' resi memiliki rencana Q–R. Seluruh rencana belum dijalankan.';
 $('warnings').textContent=(r.warnings||[]).join(' ');
-if(r.plannedRows.length){$('plan').classList.remove('hidden');showRows('planRows',r.plannedRows,[x=>x.noResi,x=>x.barisNomor,x=>x.barisData,x=>x.tujuan,x=>dec(x.kg),x=>dec(x.m3),x=>'Rp'+money(x.pembayaran),x=>x.statusAtas+' / '+x.statusBawah])}
+if(r.plannedRows.length){$('plan').classList.remove('hidden');showRows('planRows',r.plannedRows,[x=>x.noResi,x=>x.barisNomor,x=>x.barisData,x=>x.tujuan,x=>dec(x.kg),x=>dec(x.m3),x=>'Rp'+money(x.pembayaran),x=>x.statusAtas+' / '+x.statusBawah,x=>(x.mainChanges||[]).map(c=>c.cell+' ← '+diagnosticValue(c.after)).join('; ')])}
+if((r.skipped||[]).length){$('skipped').classList.remove('hidden');showRows('skippedRows',r.skipped,[x=>x.noResi,x=>x.row,x=>x.reason])}
+if((r.qrUpdates||[]).length){$('qr').classList.remove('hidden');const changes=r.qrUpdates.flatMap(x=>x.changes.map(c=>({...c,noResi:x.noResi,kind:x.kind})));showRows('qrRows',changes,[x=>x.noResi+' / '+(x.kind==='new'?'baru':'lama'),x=>x.cell+(x.mergedRange?' ['+x.mergedRange+']':''),x=>x.field,x=>diagnosticValue(x.before),x=>diagnosticValue(x.after)])}
+if((r.information||[]).length){$('information').classList.remove('hidden');showRows('informationRows',r.information,[x=>x.noResi,x=>x.targetCell,x=>diagnosticValue(x.sourceValue),x=>diagnosticValue(x.targetValue),x=>x.note])}
+if((r.slotIssues||[]).length){$('slotIssues').classList.remove('hidden');showRows('slotIssueRows',r.slotIssues,[x=>x.row,x=>x.fields.join(', ')])}
 if((r.diagnostics||[]).length){$('diagnostics').classList.remove('hidden');showDiagnostics(r.diagnostics)}
 if(r.conflicts.length){$('conflicts').classList.remove('hidden');showRows('conflictRows',r.conflicts,[x=>x.noResi,x=>x.row,x=>x.fields.join(', ')])}
 }).withFailureHandler(function(e){$('previewBtn').disabled=false;$('message').textContent='Gagal: '+(e&&e.message?e.message:String(e));$('message').className='bad'}).previewBonusStandbyPontianakBarat(payload);

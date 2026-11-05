@@ -71,10 +71,14 @@ function previewBonusStandbyPontianakBarat(payload) {
       reportEnd: source.reportEnd
     },
     target: { spreadsheetName: ss.getName(), tabName: tabName, spreadsheetId: spreadsheetId },
-    summary: { newRecords: plan.newRows.length, existingSame: plan.existingSame.length, existingDifferent: plan.conflicts.length, slotsAvailable: plan.slotsAvailable },
+    summary: { newRecords: plan.newRows.length, existingSame: plan.existingSame.length, existingDifferent: new Set(plan.conflicts.map(function (x) { return x.noResi; })).size, skippedRecords: plan.skipped.length, qrUpdateRecords: plan.qrUpdates.length, informationRecords: plan.information.length, slotsAvailable: plan.slotsAvailable },
     plannedRows: plan.newRows.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
     duplicates: plan.existingSame.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
     conflicts: plan.conflicts.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
+    skipped: plan.skipped.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
+    qrUpdates: plan.qrUpdates.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
+    information: plan.information.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
+    slotIssues: plan.slotIssues.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
     warnings: plan.warnings,
     diagnostics: plan.diagnostics.slice(0, BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS),
     diagnosticsTruncated: plan.diagnostics.length > BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS,
@@ -300,7 +304,7 @@ function bonusPreviewCompare_(r, numberRow, dataRow, displayNumberRow, displayDa
     const numeric = kind === 'number' || kind === 'decimal';
     // Toleransi hanya untuk noise floating point; bukan pembulatan tampilan.
     const equal = !error && (numeric ? Math.abs(actual - normalizedExpected) <= 1e-9 : actual === normalizedExpected);
-    details.push({ field: label, sourceColumn: sourceColumn || String.fromCharCode(64 + col),
+    details.push({ key: key, column: col, field: label, sourceColumn: sourceColumn || String.fromCharCode(64 + col),
       sourceValue: r.sourceValues ? r.sourceValues[col - 1] : bonusPreviewDiagnosticValue_(r[key]),
       expectedValue: bonusPreviewDiagnosticValue_(expected), targetCell: cell.a1, mergedRange: cell.merge || '',
       targetValue: bonusPreviewDiagnosticValue_(cell.value), targetDisplay: cell.display,
@@ -328,7 +332,7 @@ function bonusPreviewCompare_(r, numberRow, dataRow, displayNumberRow, displayDa
   return { fields: details.filter(function (d) { return !d.equal; }).map(function (d) { return d.field; }), details: details };
 }
 // Resolve hanya merge yang benar-benar dilaporkan Sheets, tanpa menebak sel kosong.
-function bonusPreviewCellReader_(values, display, merges, firstRow) {
+function bonusPreviewCellReader_(values, display, merges, firstRow, formulas) {
   const byCell = Object.create(null);
   merges.forEach(function (m) {
     const lastRow = Math.min(firstRow + values.length, m.row + m.rows);
@@ -347,7 +351,8 @@ function bonusPreviewCellReader_(values, display, merges, firstRow) {
       anchor = m.row; merge = m.a1;
     }
     return { value: values[anchor - firstRow][col - 1], display: display[anchor - firstRow][col - 1],
-      a1: String.fromCharCode(64 + col) + anchor, merge: merge };
+      a1: String.fromCharCode(64 + col) + anchor, merge: merge,
+      formula: formulas ? formulas[anchor - firstRow][col - 1] : '' };
   };
 }
 function bonusPreviewInspectTarget_(sheet, records, timezone, dateISO, destinationMap) {
@@ -357,7 +362,8 @@ function bonusPreviewInspectTarget_(sheet, records, timezone, dateISO, destinati
       !norm(headers[0][17]).includes('CAB') || !norm(headers[1][16]).includes('STATUS')) {
     throw new Error('Header tab tujuan tidak sesuai template (E2 NO.RESI, G2 Tujuan, Q3 Status, R2 Cab).');
   }
-  const maxSlots = Math.min(BARAKA_BONUS_PREVIEW.MAX_SLOTS, Math.floor((sheet.getMaxRows() - BARAKA_BONUS_PREVIEW.FIRST_NUMBER_ROW + 1) / 2));
+  const maxSlots = Math.floor((sheet.getMaxRows() - BARAKA_BONUS_PREVIEW.FIRST_NUMBER_ROW + 1) / 2);
+  if (maxSlots > BARAKA_BONUS_PREVIEW.MAX_SLOTS) throw new Error('Tab melebihi batas pemeriksaan 1500 pasangan resi; preview dihentikan agar resi di luar cakupan tidak terduplikasi.');
   if (maxSlots < 1) throw new Error('Tab tanggal belum memiliki slot data mulai baris 5 dan 6.');
   const height = maxSlots * 2;
   const range = sheet.getRange(BARAKA_BONUS_PREVIEW.FIRST_NUMBER_ROW, 1, height, 18);
@@ -367,76 +373,126 @@ function bonusPreviewInspectTarget_(sheet, records, timezone, dateISO, destinati
   const merges = range.getMergedRanges().map(function (m) {
     return { row: m.getRow(), col: m.getColumn(), rows: m.getNumRows(), cols: m.getNumColumns(), a1: m.getA1Notation() };
   });
-  const readCell = bonusPreviewCellReader_(values, display, merges, BARAKA_BONUS_PREVIEW.FIRST_NUMBER_ROW);
-  const existing = Object.create(null);
-  let lastOccupiedSlot = -1;
-  const warnings = [];
+  const readCell = bonusPreviewCellReader_(values, display, merges, BARAKA_BONUS_PREVIEW.FIRST_NUMBER_ROW, formulas);
+  const existing = Object.create(null), freeSlots = [], slotIssues = [];
+  const empty = function (v) { return v === '' || v == null; };
   for (let i = 0; i < maxSlots; i++) {
-    const noRow = values[i * 2], dataRow = values[i * 2 + 1];
-    const noDisplay = display[i * 2], dataDisplay = display[i * 2 + 1];
-    const resi = bonusPreviewNormText_(noRow[4]);
-
-    if (String(dataRow[4] || '').trim()) {
-      throw new Error('Struktur tidak sesuai: nomor resi ditemukan pada baris data ' + (6 + i * 2) + '.');
-    }
-    if (!resi) continue;
+    const rowNumber = BARAKA_BONUS_PREVIEW.FIRST_NUMBER_ROW + i * 2;
+    const top = values[i * 2], bottom = values[i * 2 + 1];
+    const mainValues = top.slice(1, 16).concat(bottom.slice(1, 16));
+    const mainFormulas = formulas[i * 2].slice(1, 16).concat(formulas[i * 2 + 1].slice(1, 16));
+    // Hanya B:P menentukan isi resi. Nol, whitespace, dan formula bukan sel kosong.
+    const mainEmpty = mainValues.every(empty) && mainFormulas.every(function (v) { return !v; });
     const cells = [];
-    for (let col = 1; col <= 18; col++) cells.push(readCell(col === 5 ? 5 + i * 2 : 6 + i * 2, col));
-    cells.statusTop = readCell(5 + i * 2, 17);
-    cells.statusBottom = readCell(6 + i * 2, 17);
-    let existingDate = '';
-    try { existingDate = bonusPreviewNormDate_(cells[1].value, cells[1].display, timezone); }
-    catch (e) { /* Nilai tidak valid akan dilaporkan sebagai konflik per kolom. */ }
-    if (existingDate && existingDate !== dateISO) {
-      throw new Error('Tab tanggal ' + String(Number(dateISO.slice(-2))) + ' berisi resi ' + resi + ' bertanggal ' + existingDate + ', bukan ' + dateISO + '.');
+    for (let col = 1; col <= 18; col++) cells.push(readCell(col === 5 ? rowNumber : rowNumber + 1, col));
+    cells.statusTop = readCell(rowNumber, 17);
+    cells.statusBottom = readCell(rowNumber + 1, 17);
+    const slot = { rowNumber: rowNumber, dataRowNumber: rowNumber + 1,
+      numberRow: top, dataRow: bottom, qrFormulas: formulas[i * 2].slice(16, 18).concat(formulas[i * 2 + 1].slice(16, 18)), displayNumberRow: display[i * 2], displayDataRow: display[i * 2 + 1], cells: cells };
+    if (mainEmpty) {
+      freeSlots.push(slot); // Q:R lama dan nomor/formula A tidak menghalangi slot reset.
+      continue;
     }
-    lastOccupiedSlot = i;
-    if (existing[resi]) {
-      existing[resi].duplicated = true;
-    } else existing[resi] = { rowNumber: 5 + i * 2, dataRowNumber: 6 + i * 2, numberRow: noRow, dataRow: dataRow, displayNumberRow: noDisplay, displayDataRow: dataDisplay, cells: cells, duplicated: false };
+    if (!empty(bottom[4])) {
+      throw new Error('Struktur tidak sesuai: nomor resi ditemukan pada baris data ' + (rowNumber + 1) + '.');
+    }
+    const resi = bonusPreviewNormText_(top[4]);
+    if (!resi) {
+      slotIssues.push({ row: rowNumber, fields: ['B:P berisi data/rumus tanpa kunci resi literal yang dapat diverifikasi; slot dilindungi.'] });
+      continue;
+    }
+    if (existing[resi]) existing[resi].duplicated = true;
+    else existing[resi] = Object.assign(slot, { duplicated: false, protectedIdentity: !!formulas[i * 2][4] });
   }
-  const existingSame = [], conflicts = [], toPlace = [], diagnostics = [];
+  const existingSame = [], conflicts = [], newRows = [], skipped = [], qrUpdates = [], information = [], diagnostics = [];
+  let nextFree = 0;
+  const sourceCounts = Object.create(null);
+  records.forEach(function (r) { const key = bonusPreviewNormText_(r.noResi); sourceCounts[key] = (sourceCounts[key] || 0) + 1; });
   records.forEach(function (r) {
-    const old = existing[bonusPreviewNormText_(r.noResi)];
-    if (!old) { toPlace.push(r); return; }
-    if (old.duplicated) {
-      conflicts.push({ noResi: r.noResi, row: old.dataRowNumber, fields: ['Nomor resi ganda di sheet'] }); return;
+    const key = bonusPreviewNormText_(r.noResi), old = existing[key];
+    if (!key || sourceCounts[key] > 1) {
+      conflicts.push({ noResi: r.noResi, row: null, fields: ['Nomor resi sumber kosong/ganda; tidak ada rencana perubahan.'] });
+      return;
     }
-    const comparison = bonusPreviewCompare_(r, old.numberRow, old.dataRow, old.displayNumberRow, old.displayDataRow, timezone, old.cells, destinationMap);
-    diagnostics.push({ noResi: r.noResi, numberRow: old.rowNumber, dataRow: old.dataRowNumber, fields: comparison.details });
-    if (comparison.fields.length) conflicts.push({ noResi: r.noResi, row: old.dataRowNumber, fields: comparison.fields });
-    else existingSame.push({ noResi: r.noResi, row: old.dataRowNumber });
-  });
-  const newRows = [];
-  let next = lastOccupiedSlot + 1;
-  toPlace.forEach(function (r) {
-    while (next < maxSlots) {
-      const noRow = values[next * 2], dataRow = values[next * 2 + 1];
-      const noFormulas = formulas[next * 2], dataFormulas = formulas[next * 2 + 1];
-      const numberRow = 5 + next * 2, dataRowNumber = numberRow + 1;
-      const numberValue = String(noRow[0] == null ? '' : noRow[0]).trim();
-      const numberOk = !numberValue || numberValue === String(next + 1);
-      for (let col = 1; col <= 18; col++) readCell(dataRowNumber, col); // Validasi batas merge slot.
-      const emptyData = noRow.slice(1, 18).concat(dataRow.slice(1, 18)).every(function (v) { return v === '' || v === null; });
-      const emptyStatus = noRow[16] === '' || noRow[16] === null;
-      const formulasClear = noFormulas.every(function (v) { return !v; }) && dataFormulas.every(function (v) { return !v; });
-      if (numberOk && emptyData && emptyStatus && formulasClear) {
-        // Jika A5:A6 digabung, itu masih aman; tidak ada penulisan pada tahap ini.
-        newRows.push({ noResi: r.noResi, nomor: next + 1, barisNomor: numberRow, barisData: dataRowNumber,
-          tanggal: r.masuk, tanggalBerangkat: r.berangkat, pengirim: r.pengirim, penerima: r.penerima,
-          tujuan: r.tujuan, koli: r.koli, kg: r.kg, m3: r.m3,
-          pembayaran: r.tunai + r.tujuanBayar + r.vaPengirim + r.vaTujuan,
-          statusAtas: r.statusAtas, statusBawah: r.statusBawah, cab: r.cab });
-        next++;
-        break;
+    if (old) {
+      skipped.push({ noResi: r.noResi, row: old.dataRowNumber, reason: 'Resi sudah ada; seluruh B:P dipertahankan, termasuk sel kosong dan tanggal berangkat.' });
+      if (old.duplicated || old.protectedIdentity) {
+        conflicts.push({ noResi: r.noResi, row: old.dataRowNumber, fields: [old.duplicated ? 'Nomor resi ganda di sheet' : 'Kunci resi berupa rumus; tidak ada rencana pembaruan Q:R.'] });
+        return; // Identitas ambigu: Q:R juga tidak boleh direncanakan.
       }
-      // Jangan lompat ke slot yang tampak rusak / berisi data tanpa resi.
-      throw new Error('Slot ' + numberRow + '/' + dataRowNumber + ' tidak kosong/berisi formula atau nomor berbeda. Periksa template sebelum impor.');
+      const comparison = bonusPreviewCompare_(r, old.numberRow, old.dataRow, old.displayNumberRow, old.displayDataRow, timezone, old.cells, destinationMap);
+      comparison.details.forEach(function (d) {
+        d.policy = d.column >= 17 ? 'Q:R; lihat rencana/perlindungan rumus' : d.key === 'berangkat' ? 'Informasi; tanggal tujuan dipertahankan' : 'B:P dilindungi';
+      });
+      diagnostics.push({ noResi: r.noResi, numberRow: old.rowNumber, dataRow: old.dataRowNumber, fields: comparison.details });
+      const important = comparison.details.filter(function (d) { return !d.equal && d.column <= 16 && d.key !== 'berangkat'; });
+      const departure = comparison.details.find(function (d) { return !d.equal && d.key === 'berangkat'; });
+      if (departure) information.push({ noResi: r.noResi, row: old.dataRowNumber, field: departure.field,
+        sourceValue: departure.expectedValue, targetValue: departure.targetValue, targetCell: departure.targetCell,
+        note: departure.error || 'Tanggal berangkat berbeda; nilai tujuan tetap dipertahankan.' });
+      if (!comparison.fields.length) existingSame.push({ noResi: r.noResi, row: old.dataRowNumber });
+      const qr = bonusPreviewPlanQR_(r, old);
+      const protectedFields = important.map(function (d) { return d.field; }).concat(qr.blocked);
+      if (protectedFields.length) conflicts.push({ noResi: r.noResi, row: old.dataRowNumber, fields: protectedFields });
+      if (!qr.blocked.length && qr.changes.length) qrUpdates.push({ noResi: r.noResi, row: old.dataRowNumber, kind: 'existing', changes: qr.changes });
+      return;
     }
-    if (next >= maxSlots && newRows.length < toPlace.length) throw new Error('Slot data pada tab tidak mencukupi. Tidak akan menambah baris otomatis.');
+    const slot = freeSlots[nextFree];
+    if (!slot) {
+      conflicts.push({ noResi: r.noResi, row: null, fields: ['Tidak ada slot B:P kosong tanpa rumus; tidak menambah baris otomatis.'] });
+      return;
+    }
+    const qr = bonusPreviewPlanQR_(r, slot);
+    const mainChanges = [], invalid = [];
+    bonusPreviewFields_().filter(function (f) { return f[2] <= 16; }).forEach(function (f) {
+      let value = r[f[0]];
+      if (f[0] === 'tujuan' && Object.prototype.hasOwnProperty.call(destinationMap || {}, bonusPreviewNormText_(value))) value = destinationMap[bonusPreviewNormText_(value)];
+      const cell = slot.cells[f[2] - 1];
+      if (!empty(cell.value) || cell.formula) invalid.push(f[1] + ': sel tujuan tidak kosong atau berisi rumus.');
+      if ((f[3] === 'number' || f[3] === 'decimal') && r.sourceValues && !String(r.sourceValues[f[2] - 1]).trim()) invalid.push(f[1] + ': angka sumber kosong belum membuktikan nol.');
+      if (typeof value === 'string' && value.charAt(0) === '=') invalid.push(f[1] + ': teks diawali = harus ditinjau agar tidak menjadi rumus.');
+      mainChanges.push({ cell: cell.a1, mergedRange: cell.merge, before: bonusPreviewDiagnosticValue_(cell.value), after: value, valueType: f[3] });
+    });
+    if (invalid.length || qr.blocked.length) {
+      if (qr.blocked.length) nextFree++; // Slot kosong, tetapi Q:R tidak dapat diubah tanpa menimpa rumus.
+      conflicts.push({ noResi: r.noResi, row: slot.dataRowNumber, fields: invalid.concat(qr.blocked) });
+      return; // Tidak mengeluarkan rencana parsial untuk resi baru.
+    }
+    nextFree++;
+    newRows.push({ noResi: r.noResi, nomor: bonusPreviewDiagnosticValue_(slot.numberRow[0]),
+      barisNomor: slot.rowNumber, barisData: slot.dataRowNumber, mainChanges: mainChanges,
+      tanggal: r.masuk, tanggalBerangkat: r.berangkat, pengirim: r.pengirim, penerima: r.penerima,
+      tujuan: mainChanges.find(function (change) { return /^G\d+$/.test(change.cell); }).after, koli: r.koli, kg: r.kg, m3: r.m3,
+      pembayaran: r.tunai + r.tujuanBayar + r.vaPengirim + r.vaTujuan,
+      statusAtas: r.statusAtas, statusBawah: r.statusBawah, cab: r.cab });
+    if (qr.changes.length) qrUpdates.push({ noResi: r.noResi, row: slot.dataRowNumber, kind: 'new', changes: qr.changes });
   });
-  if (records.length && !toPlace.length) warnings.push('Seluruh resi sumber sudah ada pada tab tujuan. Tidak ada baris baru yang direncanakan.');
-  if (conflicts.length) warnings.push('Resi yang sudah ada tetapi isinya berbeda tidak akan ditimpa. Periksa kolom yang ditandai.');
-  if (newRows.length > BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS) warnings.push('Tampilan pratinjau dibatasi 80 baris; hitungan total tetap lengkap.');
-  return { diagnostics: diagnostics, newRows: newRows, existingSame: existingSame, conflicts: conflicts, warnings: warnings, slotsAvailable: maxSlots - lastOccupiedSlot - 1 };
+  const warnings = ['READ ONLY: seluruh rencana belum dijalankan. B:P resi lama tidak diperbarui. A dan S:Z tidak direncanakan untuk ditulis.'];
+  if (slotIssues.length) warnings.push('Ada slot B:P berisi data/rumus tanpa resi yang dapat diverifikasi; slot tersebut dilindungi.');
+  if (conflicts.length) warnings.push('Konflik dilaporkan tanpa perubahan B:P. Rencana Q:R hanya untuk resi dengan identitas/struktur yang dapat diverifikasi dan tanpa rumus Q:R.');
+  if ([newRows, skipped, conflicts, qrUpdates, information, diagnostics, slotIssues].some(function (rows) { return rows.length > BARAKA_BONUS_PREVIEW.MAX_PREVIEW_ROWS; })) warnings.push('Setiap daftar ditampilkan maksimal 80 entri; ringkasan tetap memakai hitungan lengkap.');
+  return { diagnostics: diagnostics, newRows: newRows, existingSame: existingSame, skipped: skipped,
+    conflicts: conflicts, qrUpdates: qrUpdates, information: information, slotIssues: slotIssues,
+    warnings: warnings, slotsAvailable: freeSlots.length - Math.min(nextFree, freeSlots.length) };
+}
+
+// Hanya menghasilkan rencana sel; tidak memiliki akses tulis ke Sheets.
+function bonusPreviewPlanQR_(r, slot) {
+  const top = slot.cells.statusTop, bottom = slot.cells.statusBottom;
+  const entries = top.merge && top.merge === bottom.merge
+    ? [[top, [r.statusAtas, r.statusBawah].filter(Boolean).join('\n'), 'Status gabungan']]
+    : [[top, r.statusAtas, 'Status atas'], [bottom, r.statusBawah, 'Status bawah']];
+  entries.push([slot.cells[17], r.cab, 'Cabang']);
+  const blocked = [], changes = [];
+  // Lindungi juga rumus di bagian non-anchor Q:R.
+  const qrFormulas = slot.qrFormulas || [];
+  if (qrFormulas.some(Boolean)) blocked.push('Rumus Q:R dilindungi; tidak ada rencana pembaruan Q:R.');
+  entries.forEach(function (entry) {
+    const cell = entry[0], after = entry[1] == null ? '' : String(entry[1]);
+    if (cell.formula) blocked.push('Rumus ' + cell.a1 + ' dilindungi.');
+    if (after.charAt(0) === '=') blocked.push('Teks ' + cell.a1 + ' diawali =; perlu ditinjau agar tidak menjadi rumus.');
+    if (String(cell.value == null ? '' : cell.value) !== after) changes.push({ cell: cell.a1, mergedRange: cell.merge,
+      field: entry[2], before: bonusPreviewDiagnosticValue_(cell.value), beforeDisplay: cell.display, after: after });
+  });
+  return { blocked: blocked, changes: blocked.length ? [] : changes };
 }

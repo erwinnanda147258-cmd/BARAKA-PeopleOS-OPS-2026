@@ -75,9 +75,10 @@ test('mixed merged and unmerged columns resolve independently', () => {
 test('merged status compares complete ordered status, not anchor against blank lower cell', () => {
   const r = record(), s = sheet([r], true, true);
   assert.equal(inspect(s, [r]).existingSame.length, 1);
-  s.values[0][16] = 'DITERIMA LUNAS'; assert.equal(inspect(s, [r]).conflicts.length, 1);
+  s.values[0][16] = 'DITERIMA LUNAS'; const plan = inspect(s, [r]);
+  assert.equal(plan.conflicts.length, 0); assert.equal(plan.qrUpdates[0].changes[0].after, 'LUNAS\nDITERIMA');
 });
-for (const [key, value] of [['tunai', 1234001], ['m3', 0.054], ['pengirim', 'PT Lain'], ['tujuan', 'SURABAYA TIMUR'], ['statusBawah', 'BELUM DITERIMA'], ['berangkat', '2026-11-03'], ['cab', '015PTK']]) {
+for (const [key, value] of [['masuk', '2026-11-01'], ['tunai', 1234001], ['m3', 0.054], ['pengirim', 'PT Lain'], ['tujuan', 'SURABAYA TIMUR']]) {
   test(`real ${key} difference remains a conflict`, () => {
     const r = record(); const plan = inspect(sheet([{ ...r, [key]: value }]), [r]);
     assert.equal(plan.existingSame.length, 0); assert.equal(plan.conflicts.length, 1);
@@ -109,7 +110,9 @@ test('numeric Sheets date serial and dd/MM/yyyy text agree with ISO', () => {
 });
 test('invalid nonempty departure date cannot silently equal an empty date', () => {
   const r = record(), s = sheet([r]); s.values[0][2] = 'not a date';
-  assert.equal(inspect(s, [r]).conflicts.length, 1);
+  const plan = inspect(s, [r]);
+  assert.equal(plan.conflicts.length, 0); assert.equal(plan.information.length, 1);
+  assert.match(plan.information[0].note, /tanggal/);
   assert.throws(() => c.bonusPreviewParseDatot_(datot([{ ...r, berangkat: 'not a date' }]), 'datot.xls'), /tanggal/);
 });
 test('only explicit destination mapping can equate code and name', () => {
@@ -133,8 +136,10 @@ test('horizontal and cross-receipt merges fail safely', () => {
 test('new receipt only plans an empty slot; orphan upper-row data and formulas block it', () => {
   const r = record(), incoming = { ...r, noResi: '014PTK-002/A' };
   const s = sheet([r]); assert.equal(inspect(s, [r, incoming]).newRows[0].barisNomor, 7);
-  s.values[2][3] = 'existing orphan data'; assert.throws(() => inspect(s, [r, incoming]), /tidak kosong/);
-  s.values[2][3] = ''; s.formulas[2][10] = '=1'; assert.throws(() => inspect(s, [r, incoming]), /tidak kosong/);
+  s.values[2][3] = 'existing orphan data'; let plan = inspect(s, [r, incoming]);
+  assert.equal(plan.newRows.length, 0); assert.equal(plan.slotIssues.length, 1); assert.equal(plan.conflicts.length, 1);
+  s.values[2][3] = ''; s.formulas[2][10] = '=1'; plan = inspect(s, [r, incoming]);
+  assert.equal(plan.newRows.length, 0); assert.equal(plan.slotIssues.length, 1);
 });
 test('source duplicate receipts and unsupported spans are rejected', () => {
   const r = record(); assert.throws(() => c.bonusPreviewParseDatot_(datot([r, r]), 'datot.xls'), /duplikat/);
@@ -190,10 +195,15 @@ test('preview UI renders diagnostic evidence as text, including untrusted source
     addEventListener(type, fn) { this[type] = fn; }
     set innerHTML(value) { throw new Error('Untrusted HTML insertion'); }
   }
-  const ids = Object.fromEntries(['dateISO', 'fileUrl', 'branchFolderUrl', 'bonusSpreadsheetUrl', 'previewBtn', 'message', 'result', 'plan', 'conflicts', 'diagnostics', 'total', 'baru', 'sama', 'beda', 'source', 'summary', 'warnings', 'planRows', 'conflictRows', 'diagnosticRows'].map(id => [id, new Element()]));
+  const ids = Object.fromEntries(['dateISO', 'fileUrl', 'branchFolderUrl', 'bonusSpreadsheetUrl', 'previewBtn', 'message', 'result', 'plan', 'conflicts', 'diagnostics', 'total', 'baru', 'sama', 'beda', 'source', 'summary', 'warnings', 'planRows', 'conflictRows', 'diagnosticRows','skipped','qr','information','slotIssues','skippedRows','qrRows','informationRows','slotIssueRows'].map(id => [id, new Element()]));
   ids.dateISO.value = '2026-11-02';
   const attack = '<img src=x onerror=alert(1)>';
   const report = { source: { recordCount: 1 }, target: { tabName: '2' }, summary: { newRecords: 0, existingSame: 0, existingDifferent: 1 }, warnings: [], plannedRows: [], conflicts: [{ noResi: '014PTK-001/A', row: 6, fields: ['Pengirim'] }], diagnostics: [{ noResi: '014PTK-001/A', numberRow: 5, dataRow: 6, fields: [{ field: 'Pengirim', sourceColumn: 'D', sourceValue: attack, expectedValue: attack, targetCell: 'D5', mergedRange: 'D5:D6', targetValue: 'Other', targetDisplay: 'Other', sourceNormalized: attack, targetNormalized: 'OTHER', equal: false }] }] };
+  report.summary.skippedRecords = 1; report.summary.qrUpdateRecords = 1;
+  report.skipped = [{ noResi: '014PTK-001/A', row: 6, reason: 'Seluruh B:P dipertahankan' }];
+  report.qrUpdates = [{ noResi: '014PTK-001/A', kind: 'existing', changes: [{ cell: 'Q6', before: 'LAMA', after: attack, field: 'Status bawah', mergedRange: '' }] }];
+  report.information = [{ noResi: '014PTK-001/A', targetCell: 'C5', sourceValue: '2026-11-03', targetValue: '', note: 'Tanggal dipertahankan' }];
+  report.slotIssues = [{ row: 9, fields: ['Rumus B:P dilindungi'] }];
   const runner = { withSuccessHandler(fn) { this.success = fn; return this; }, withFailureHandler() { return this; }, getOpsBootstrap() { this.success({ branches: [] }); }, previewBonusStandbyPontianakBarat() { this.success(report); } };
   const google = { script: { run: runner } };
   const browser = vm.createContext({ document: { getElementById: id => ids[id], createElement: () => new Element() }, window: { google }, google, Intl });
@@ -203,4 +213,130 @@ test('preview UI renders diagnostic evidence as text, including untrusted source
   const allText = node => node.textContent + node.children.map(allText).join(' ');
   assert.ok(allText(ids.diagnosticRows).includes(attack));
   assert.ok(allText(ids.diagnosticRows).includes('D5 [D5:D6]'));
+  for (const id of ['skipped', 'qr', 'information', 'slotIssues']) assert.equal(ids[id].hidden, false);
+  assert.ok(allText(ids.qrRows).includes(attack));
+  assert.ok(allText(ids.informationRows).includes('Tanggal dipertahankan'));
+  assert.equal(ids.sama.textContent, '1');
+});
+
+function resetMain(target, slot = 0) {
+  for (const row of [slot * 2, slot * 2 + 1]) for (let col = 1; col < 16; col++) target.values[row][col] = '';
+  target.setDisplay(v => String(v));
+}
+const snapshot = target => JSON.stringify({ values: target.values, formulas: target.formulas, merges: target.merges });
+test('central reset: four blank B:P pairs with stale Q:R are new slots; nothing is mutated', () => {
+  const records = Array.from({ length: 4 }, (_, i) => ({ ...record(), noResi: `014PTK-NEW${i}/A` }));
+  const target = sheet(records.map(r => ({ ...r, statusAtas: 'STATUS LAMA', statusBawah: 'LAMA', cab: 'CAB-LAMA' })));
+  for (let i = 0; i < 4; i++) resetMain(target, i);
+  target.values[0][0] = 99; target.formulas[0][0] = '=ROW()';
+  const before = snapshot(target), plan = inspect(target, records);
+  assert.equal(plan.newRows.length, 4); assert.equal(plan.skipped.length, 0); assert.equal(plan.conflicts.length, 0);
+  assert.equal(plan.qrUpdates.length, 4);
+  assert.deepEqual(Array.from(plan.newRows, r => r.barisNomor), [5, 7, 9, 11]);
+  for (const r of plan.newRows) {
+    assert.equal(r.mainChanges.length, 15);
+    assert.ok(r.mainChanges.every(x => /^[B-P]\d+$/.test(x.cell) && x.before === ''));
+  }
+  assert.equal(plan.newRows[0].mainChanges.find(x => x.cell === 'E5').after, records[0].noResi);
+  assert.ok(plan.qrUpdates.every(r => r.changes.every(x => /^[QR]\d+$/.test(x.cell))));
+  assert.equal(plan.qrUpdates[0].changes.find(x => x.cell === 'R5').before, 'CAB-LAMA');
+  assert.equal(plan.newRows[0].nomor, 99); assert.equal(snapshot(target), before);
+});
+test('partially reset hole before live receipt is reused without duplicating live receipt', () => {
+  const incoming = record(), old = { ...record(), noResi: '014PTK-OLD/A' };
+  const target = sheet([incoming, old]); resetMain(target);
+  const plan = inspect(target, [old, incoming]);
+  assert.equal(plan.skipped.length, 1); assert.equal(plan.newRows.length, 1);
+  assert.equal(plan.newRows[0].barisNomor, 5); assert.equal(plan.skipped[0].row, 8);
+});
+test('existing receipt with updated status/cabang plans only Q:R on correct unmerged rows', () => {
+  const r = record(), target = sheet([{ ...r, statusAtas: 'LAMA', statusBawah: 'PENDING', cab: 'CAB-LAMA' }], false);
+  const before = snapshot(target), plan = inspect(target, [r]);
+  assert.equal(plan.conflicts.length, 0); assert.equal(plan.skipped.length, 1); assert.equal(plan.newRows.length, 0);
+  assert.deepEqual(Array.from(plan.qrUpdates[0].changes, x => x.cell), ['Q5', 'Q6', 'R6']);
+  assert.deepEqual(Array.from(plan.qrUpdates[0].changes, x => x.after), ['LUNAS', 'DITERIMA', '014PTK']);
+  assert.equal(plan.qrUpdates[0].kind, 'existing'); assert.equal(snapshot(target), before);
+});
+test('merged Q and R produce one update per anchor, preserving both source status parts', () => {
+  const r = record(), target = sheet([{ ...r, statusAtas: 'LAMA', cab: 'CAB-LAMA' }], true, true);
+  const plan = inspect(target, [r]);
+  assert.deepEqual(Array.from(plan.qrUpdates[0].changes, x => x.cell), ['Q5', 'R5']);
+  assert.equal(plan.qrUpdates[0].changes[0].after, 'LUNAS\nDITERIMA');
+  assert.equal(plan.qrUpdates[0].changes[0].mergedRange, 'Q5:Q6');
+});
+test('old departure differences are information; no B:P replacement or filling blank cells', () => {
+  const r = { ...record(), berangkat: '2026-11-03' }, target = sheet([{ ...r, berangkat: '', via: '' }]);
+  const before = snapshot(target), plan = inspect(target, [{ ...r, via: 'TERBARU' }]);
+  assert.equal(plan.newRows.length, 0); assert.equal(plan.information.length, 1);
+  assert.equal(plan.information[0].targetCell, 'C5'); assert.equal(plan.information[0].targetValue, '');
+  assert.ok(plan.conflicts[0].fields.includes('Via')); assert.ok(!plan.conflicts[0].fields.includes('Tanggal berangkat'));
+  assert.equal(plan.skipped.length, 1); assert.equal(snapshot(target), before);
+});
+test('important B:P conflicts preserve data while explicitly planning permitted Q:R only', () => {
+  const r = record(), target = sheet([{ ...r, tunai: 1, statusBawah: 'LAMA' }]);
+  const before = snapshot(target), plan = inspect(target, [r]);
+  assert.ok(plan.conflicts[0].fields.includes('Tunai')); assert.equal(plan.skipped.length, 1);
+  assert.equal(plan.newRows.length, 0); assert.equal(plan.qrUpdates[0].changes.length, 1);
+  assert.equal(plan.qrUpdates[0].changes[0].cell, 'Q6'); assert.equal(snapshot(target), before);
+});
+test('zero and whitespace in B:P prevent reuse after apparent reset', () => {
+  for (const v of [0, ' ']) {
+    const r = record(), target = sheet([]); target.values[0][8] = v;
+    const plan = inspect(target, [r]);
+    assert.equal(plan.newRows.length, 0); assert.equal(plan.slotIssues.length, 1); assert.equal(plan.conflicts.length, 1);
+  }
+});
+test('B:P formulas returning empty strings protect the slot, even with stale Q:R', () => {
+  const r = record(), target = sheet([]); target.formulas[0][3] = '=""'; target.values[0][16] = 'LAMA';
+  const before = snapshot(target), plan = inspect(target, [r]);
+  assert.equal(plan.newRows.length, 0); assert.equal(plan.slotIssues.length, 1); assert.equal(plan.qrUpdates.length, 0);
+  assert.equal(snapshot(target), before);
+});
+test('Q:R formulas block all updates for that receipt without overwriting B:P', () => {
+  const r = record(), target = sheet([{ ...r, statusBawah: 'LAMA' }]); target.formulas[1][16] = '=STATUS()';
+  const before = snapshot(target), plan = inspect(target, [r]);
+  assert.equal(plan.qrUpdates.length, 0); assert.equal(plan.newRows.length, 0);
+  assert.match(plan.conflicts[0].fields.join(' '), /Rumus/); assert.equal(snapshot(target), before);
+});
+test('reset slot with Q:R formula stays protected; no partial main plan is exposed', () => {
+  const r = record(), target = sheet([r]); resetMain(target); target.formulas[0][17] = '=""';
+  const plan = inspect(target, [r]);
+  assert.equal(plan.newRows.length, 0); assert.equal(plan.qrUpdates.length, 0);
+  assert.match(plan.conflicts[0].fields.join(' '), /Rumus/);
+});
+test('duplicate or formula-based receipt identity cannot cause a duplicate insert or Q:R plan', () => {
+  const r = record();
+  for (const target of [sheet([r, r]), sheet([r])]) {
+    if (target.values.length === 4) target.formulas[0][4] = '="014PTK-001/A"';
+    const plan = inspect(target, [r]);
+    assert.equal(plan.newRows.length, 0); assert.equal(plan.qrUpdates.length, 0); assert.equal(plan.skipped.length, 1);
+    assert.equal(plan.conflicts.length, 1);
+  }
+});
+test('new unmerged receipt targets E upper, B:P lower, Q upper/lower and R lower', () => {
+  const r = record(), target = sheet([]), plan = inspect(target, [r]);
+  const main = plan.newRows[0].mainChanges;
+  assert.equal(main.find(x => x.cell === 'E5').after, r.noResi);
+  assert.equal(main.find(x => x.cell === 'B6').after, r.masuk);
+  assert.equal(main.some(x => x.cell === 'A5' || x.cell[0] === 'Q' || x.cell[0] === 'R'), false);
+  assert.deepEqual(Array.from(plan.qrUpdates[0].changes, x => x.cell), ['Q5', 'Q6', 'R6']);
+});
+test('unchanged receipt does not plan redundant Q:R writes', () => {
+  const r = record(), plan = inspect(sheet([r]), [r]);
+  assert.equal(plan.skipped.length, 1); assert.equal(plan.existingSame.length, 1); assert.equal(plan.qrUpdates.length, 0);
+});
+test('running preview twice after reset yields the same plan and preserves all captured state', () => {
+  const r = record(), target = sheet([r]); resetMain(target); const before = snapshot(target);
+  const first = inspect(target, [r]), second = inspect(target, [r]);
+  assert.equal(JSON.stringify(first), JSON.stringify(second)); assert.equal(snapshot(target), before);
+});
+
+test('sheets exceeding scan limit fail safely rather than treating unseen receipts as new', () => {
+  const target = sheet([]); target.getMaxRows = () => 4004;
+  assert.throws(() => inspect(target, [record()]), /di luar cakupan/);
+});
+test('new-record plan displays the actual mapped destination', () => {
+  const plan = inspect(sheet([]), [record()], { '010SBY': 'SURABAYA BARAT' });
+  assert.equal(plan.newRows[0].tujuan, 'SURABAYA BARAT');
+  assert.equal(plan.newRows[0].mainChanges.find(x => x.cell === 'G6').after, 'SURABAYA BARAT');
 });

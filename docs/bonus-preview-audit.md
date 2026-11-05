@@ -1,5 +1,25 @@
 # Audit Preview Bonus Standby (READ ONLY)
 
+## Kebijakan B–P dan Q–R setelah reset pusat
+
+Preview tetap READ ONLY dan tidak menyediakan endpoint/tombol penulisan baru. Semua alamat/nilai yang dihasilkan adalah **rencana**, bukan instruksi yang sudah dijalankan. Aktifnya pengujian lokal tidak mengaktifkan impor; penulisan memerlukan pengujian Apps Script dan persetujuan pengguna dalam pekerjaan berikutnya.
+
+| Kondisi | Hasil preview |
+| --- | --- |
+| Kedua baris B:P kosong tanpa formula, Q:R masih lama | Slot kosong/reset, boleh direncanakan untuk resi baru. Pencarian dimulai dari slot kosong paling awal, termasuk lubang sebelum resi yang masih ada. |
+| Nomor resi sudah ada | Masuk daftar dilewati pada B:P; tidak ada rencana pengisian atau penggantian B:P, termasuk sel yang kosong. |
+| Perbedaan penting B:P selain tanggal berangkat | Konflik per field, tanpa perubahan data utama. Q:R tetap boleh direncanakan untuk resi dengan identitas unik dan tanpa rumus Q:R. |
+| Tanggal berangkat lama berbeda/tidak dikenali | Informasi terpisah, nilai C tujuan dipertahankan; bukan alasan menimpa tanggal. |
+| Status/cabang berbeda | Daftar rencana Q:R memuat alamat/merge, nilai lama dan nilai terbaru. Tidak dihitung sebagai konflik B:P. |
+| Q:R sama persis dengan sumber | Tidak ada rencana penulisan berulang. |
+| B:P berisi nol, whitespace atau formula (termasuk `=""`) | Bukan slot kosong. Data/formula tanpa kunci resi dilaporkan sebagai slot dilindungi. |
+| Nomor resi ganda atau berupa formula | Tidak membuat resi baru dan tidak merencanakan Q:R untuk identitas tersebut. |
+| Q:R berisi formula | Rencana Q:R diblokir untuk resi itu. Untuk resi baru, rencana B:P juga tidak dikeluarkan agar tidak ada rencana parsial. |
+
+Nomor/formula A selalu dipertahankan; nomor Datot tidak digunakan untuk menggantinya. Tanpa merge, E berada pada baris atas, field B:P lain dan R pada baris bawah, Q pada kedua baris. Dengan merge vertikal dalam satu pasangan, setiap sel ditujukan ke anchor yang dilaporkan Sheets. Q yang digabung menerima gabungan status atas dan bawah dengan pemisah baris; Q terpisah memiliki dua rencana sel. R ditujukan sekali ke anchor merge atau baris bawah bila tidak digabung. Tidak ada rencana unmerge, merge ulang, format, penomoran, penghapusan baris atau perubahan S:Z. Tab dengan lebih dari 1500 pasangan dihentikan secara eksplisit agar pembacaan sebagian tidak memungkinkan duplikasi resi di luar cakupan.
+
+Laporan menambahkan `skipped`, `qrUpdates`, `information`, `slotIssues`, serta daftar alamat/nilai B:P untuk setiap `plannedRows[].mainChanges`. `summary.existingDifferent` menghitung resi unik yang memiliki konflik, sedangkan resi dilewati dapat sekaligus memiliki konflik dan rencana Q:R. `existingSame` tetap berarti seluruh nilai yang dibandingkan sama setelah normalisasi, bukan sekadar nomor resi ditemukan. Tiap daftar dibatasi 80 entri pada respons; hitungan ringkasan memakai hasil lengkap.
+
 ## Hubungan file
 
 | File | Peran |
@@ -38,7 +58,7 @@ Tanggal Date memakai zona waktu spreadsheet, serial angka memakai kalender Sheet
 
 Sumber tetap harus memiliki 18 kolom: A nomor urut tetap ada di ekspor, meski bukan nilai yang dibandingkan dengan nomor urut tujuan. Baris jumlah/total tidak menjadi resi. Data resi dengan jumlah kolom berubah, kunci resi pindah dari E, atau span yang tidak didukung ditolak. Pemeriksaan header E/G/R tetap menjadi pagar template; belum membuktikan semua header sumber/tujuan aktual karena berkas perusahaan belum tersedia.
 
-Nomor resi dicari di baris atas dan dipakai sebagai kunci. Untuk kolom lain, posisi logis adalah baris bawah; jika sel tersebut termasuk merge vertikal dalam pasangan yang sama, nilai dibaca dari anchor atasnya. Tujuan hanya diterjemahkan memakai mapping tersimpan (`loadConfig_`), tanpa menebak hubungan kode dan nama. Formula S:Z tidak dibaca/diubah. Kandidat slot baru juga memeriksa isi dan formula di kedua baris A:R, tetapi tetap hanya rencana.
+Nomor resi dicari di baris atas dan dipakai sebagai kunci. Untuk kolom lain, posisi logis adalah baris bawah; jika sel tersebut termasuk merge vertikal dalam pasangan yang sama, nilai dibaca dari anchor atasnya. Tujuan hanya diterjemahkan memakai mapping tersimpan (`loadConfig_`), tanpa menebak hubungan kode dan nama. Formula S:Z tidak dibaca/diubah. Kandidat slot baru memeriksa isi dan formula di kedua baris B:P; Q:R lama tidak menentukan keterisian slot, tetapi rumus Q:R tetap dilindungi. A tidak direncanakan untuk ditulis.
 
 ## Uji lokal
 
@@ -48,7 +68,7 @@ Jalankan dari akar repository dengan Node.js 24:
 node tests/bonus-preview.test.cjs
 ```
 
-Suite memakai `node:test`, tanpa paket tambahan. Mock hanya menyediakan metode baca. Cakupan mencakup empat resi sintetis, campuran sel merged/unmerged, status, Date dengan timezone, serial Sheets, angka lokal, nol tersembunyi, sel kosong, mapping tujuan eksplisit, resi ganda, merge tidak sesuai, sumber rusak, serta slot berisi data/formula. Perubahan nominal, M3, teks, tujuan, tanggal berangkat, status dan cabang harus tetap terdeteksi. Uji endpoint memuat Kode.gs dan backend preview bersama, lalu memeriksa hasil READ_ONLY dan serialisasi diagnostik.
+Suite memakai `node:test`, tanpa paket tambahan. Mock hanya menyediakan metode baca. Cakupan mencakup empat resi sintetis, campuran sel merged/unmerged, status, Date dengan timezone, serial Sheets, angka lokal, nol tersembunyi, sel kosong, mapping tujuan eksplisit, resi ganda, merge tidak sesuai, sumber rusak, serta slot berisi data/formula. Perubahan nominal, M3, teks dan tujuan tetap menjadi konflik penting. Tanggal berangkat menjadi informasi; status/cabang menjadi rencana Q:R sesuai kebijakan di atas. Pengujian reset penuh/parsial, proteksi formula, pencegahan duplikasi, serta preview berulang memeriksa bahwa isi, rumus dan merge mock tidak berubah. Uji endpoint memuat Kode.gs dan backend preview bersama, lalu memeriksa hasil READ_ONLY dan serialisasi diagnostik.
 
 ## Uji ulang di Apps Script
 
@@ -57,6 +77,8 @@ Suite memakai `node:test`, tanpa paket tambahan. Mock hanya menyediakan metode b
 3. Pilih **2026-11-02**, isi folder cabang dan spreadsheet HITUNGAN BONUS STANDBY CABANG PONTIANAK, serta link Datot 014PTK yang sama. Preview akan memeriksa tab **`2`**, bukan tab induk/rekap `BONUS`.
 4. Jalankan preview. Pastikan mode tetap READ ONLY dan tidak ada tombol impor. Buka diagnostik setiap resi: cocokkan sumber mentah, pembanding setelah mapping, alamat anchor/merge, nilai mentah/tampilan tujuan, dan kedua hasil normalisasi.
 5. Hasil 4 identik / 0 konflik hanya benar jika seluruh field memang sama menurut aturan di atas. Jika ada konflik, periksa field yang ditandai. Nol tidak boleh disimpulkan dari tampilan kosong; pastikan nilai mentahnya benar-benar `0`.
-6. Untuk membuktikan konflik nyata, gunakan fixture lokal atau **salinan pengujian** spreadsheet dan ubah satu nilai nominal/status pada salinan saja, lalu preview salinan tersebut. Jangan mengubah spreadsheet perusahaan untuk pengujian. Jangan menjalankan endpoint commit.
+6. Pada **salinan pengujian** saja, siapkan empat pasangan dengan B:P kosong tanpa formula, sambil mempertahankan A, merge, Q:R lama, dan S:Z. Jalankan preview: empat resi baru harus direncanakan pada slot tersebut, bukan ditolak karena Q:R lama. Periksa alamat B:P dan Q:R pada laporan. Preview tidak mengisi sel mana pun.
+7. Untuk resi lama pada salinan, gunakan tanggal berangkat/status/cabang berbeda: B:P harus masuk daftar dilewati, tanggal menjadi informasi, dan hanya Q:R masuk rencana perubahan. Nilai nominal berbeda tetap muncul sebagai konflik B:P. Formula B:P yang tampil kosong harus melindungi slot; formula Q:R harus memblokir rencana Q:R.
+8. Bandingkan nilai, formula, merge dan format salinan sebelum/sesudah dua kali preview; semuanya harus tetap sama. Jangan mengubah spreadsheet perusahaan untuk pengujian dan jangan menjalankan endpoint commit integrasi lama.
 
 Jika masih berbeda, kirim Datot `.xls` HTML asli (boleh disamarkan tetapi struktur kolom, format angka, tanggal dan `<br>` status dipertahankan), header tab `2` rentang **A2:R3**, serta **A:R pada dua baris setiap resi yang bermasalah**. Bila empat resi ada pada slot awal, rentangnya **A5:R12**; jika tidak, gunakan pasangan baris yang ditunjukkan diagnostik. Sertakan daftar rentang merge di area tersebut dan nilai mentah/tampilan dari diagnostik. Ekspor CSV saja tidak memuat bukti merge atau tipe Date. Tidak perlu mengirim kolom S:Z, kredensial, atau seluruh workbook.
