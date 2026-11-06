@@ -848,7 +848,7 @@ function commitDatot_(branchPlan) {
   const day = String(Number(branchPlan.date.slice(-2)));
   const sheet = ss.getSheetByName(day);
   if (!sheet) throw new Error('Tab bonus tanggal ' + day + ' tidak ditemukan.');
-  const check = inspectDatotTarget_(sheet, destinationResult.records);
+  const check = inspectDatotTarget_(sheet, parsed.records);
   if (check.conflicts.length) throw new Error('Konflik nomor resi: ' + check.conflicts.slice(0, 5).join(', '));
   if (!check.newRows.length) return { ok: true, status: 'Semua resi sudah tercatat.', added: 0, skipped: check.duplicates };
   const last = findLastNonEmptyRow_(sheet, BARAKA_OPS.BONUS_FIRST_ROW, 1, BARAKA_OPS.BONUS_COLS);
