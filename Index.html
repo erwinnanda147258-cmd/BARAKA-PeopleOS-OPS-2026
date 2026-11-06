@@ -63,12 +63,135 @@
 </style>
 </head>
 <body>
+<!-- Startup diagnostics must load before the core and every optional module. -->
+<aside id="baraka-runtime-errors" role="alert" hidden style="position:relative;z-index:101;margin:12px;padding:12px 16px;background:#fff6e6;color:#754c12;border:1px solid #b77823;border-radius:8px">
+  <strong>PeopleOS memerlukan pemeriksaan</strong>
+  <p id="baraka-runtime-summary"></p>
+  <ul id="baraka-runtime-details"></ul>
+</aside>
+<noscript>PeopleOS memerlukan JavaScript. Aktifkan JavaScript untuk membuka aplikasi.</noscript>
+<script data-baraka-module="startup">
+window.BarakaRuntime = (function () {
+  'use strict';
+  const modules = [], hooks = [], failures = new Map();
+  let coreRender = null, inspectState = null, started = false, coreFailed = false;
+
+  function report(module, error) {
+    const message = error && error.message ? error.message : String(error);
+    const key = module + ': ' + message;
+    if (failures.has(key)) return;
+    failures.set(key, { module, message });
+    console.error('[PeopleOS ' + module + ']', error);
+    showErrors();
+  }
+
+  function showErrors() {
+    const panel = document.getElementById('baraka-runtime-errors');
+    if (!panel || !failures.size) return;
+    panel.hidden = false;
+    document.getElementById('baraka-runtime-summary').textContent = coreFailed
+      ? 'Inisialisasi inti gagal. Periksa error pertama di bawah, file Index.html pada Apps Script, dan versi deployment /exec. Data tersimpan tidak direset.'
+      : 'Ada modul yang gagal. Fitur lain tetap dapat digunakan; periksa rincian dan Console sebelum memakai modul tersebut.';
+    const list = document.getElementById('baraka-runtime-details');
+    list.replaceChildren();
+    for (const failure of failures.values()) {
+      const item = document.createElement('li');
+      item.textContent = failure.module + ': ' + failure.message;
+      list.appendChild(item);
+    }
+  }
+
+  function runHook(hook) {
+    try { hook.callback(); }
+    catch (error) { report(hook.name, error); }
+  }
+
+  // One real core renderer; extensions never capture another extension as prevRender.
+  function render() {
+    for (const hook of hooks.filter(h => h.before)) runHook(hook);
+    let result;
+    try { result = coreRender.apply(this, arguments); }
+    catch (error) {
+      coreFailed = true;
+      report('core/render', error);
+      throw error;
+    }
+    for (const hook of hooks.filter(h => !h.before)) runHook(hook);
+    return result;
+  }
+
+  function setCore(renderer, stateReader) {
+    if (typeof renderer !== 'function' || typeof stateReader !== 'function') {
+      throw new TypeError('Renderer dan pembaca state inti harus tersedia sebelum modul dimuat.');
+    }
+    coreRender = renderer;
+    inspectState = stateReader;
+    window.render = render;
+  }
+
+  function registerModule(name, initialize) {
+    if (started) throw new Error('Modul terlambat didaftarkan: ' + name);
+    if (typeof initialize !== 'function' || modules.some(m => m.name === name)) {
+      throw new Error('Registrasi modul tidak valid: ' + name);
+    }
+    modules.push({ name, initialize });
+  }
+
+  function addRenderHook(name, callback, before = false) {
+    if (!coreRender) throw new Error('Render inti belum siap: ' + name);
+    if (typeof callback !== 'function') throw new TypeError('Hook render tidak valid: ' + name);
+    hooks.push({ name, callback, before });
+  }
+
+  function start() {
+    started = true;
+    try {
+      if (!coreRender || !inspectState) throw new Error('Script inti tidak selesai dimuat. Periksa SyntaxError pertama, bukan error modul turunannya.');
+      const state = inspectState();
+      if (!window.HR || !state.db || !Array.isArray(state.nav) || typeof state.route !== 'string') {
+        throw new Error('State inti PeopleOS belum lengkap. Modul tambahan tidak dijalankan.');
+      }
+      if (coreFailed) throw new Error('Render awal inti gagal. Modul tambahan tidak dijalankan.');
+    } catch (error) {
+      coreFailed = true;
+      report('core/startup', error);
+      showErrors();
+      return;
+    }
+    // Registration preserves document order; all shared lexical state exists first.
+    for (const script of document.querySelectorAll('script[data-baraka-extension]')) {
+      const name = script.dataset.barakaExtension;
+      if (!modules.some(m => m.name === name)) report(name, new Error('Script tidak berhasil didaftarkan; periksa SyntaxError pada modul ini.'));
+    }
+    for (const module of modules) {
+      try { module.initialize(); }
+      catch (error) { report(module.name + '/startup', error); }
+    }
+    try { render(); }
+    catch (error) { /* core/render already reported the original failure above */ }
+    showErrors();
+  }
+
+  window.addEventListener('error', function (event) {
+    if (!event.error && !event.message) return; // Optional file load is handled by its own loader.
+    const script = document.currentScript;
+    const name = script && (script.dataset.barakaExtension || script.dataset.barakaModule);
+    report(name || 'JavaScript', event.error || new Error(event.message + ' (' + event.filename + ':' + event.lineno + ')'));
+  });
+  window.addEventListener('unhandledrejection', function (event) {
+    report('async', event.reason || new Error('Promise ditolak tanpa rincian.'));
+  });
+  document.addEventListener('DOMContentLoaded', start, { once: true });
+  return { setCore, registerModule, addRenderHook };
+})();
+</script>
+
 <div class="app"><aside class="sidebar" id="sidebar" aria-label="Navigasi utama"></aside>
 <main class="main"><header class="topbar" id="topbar"></header><div class="content" id="content"></div></main></div>
 <dialog id="modal" class="modal" aria-labelledby="modal-title"></dialog>
 <div class="toast-area" id="toasts" role="status" aria-live="polite"></div>
 <div id="print-root"></div><input id="file-input" type="file" hidden accept=".csv">
-<script>
+<script data-baraka-module="core-engine">
 /* Baraka PeopleOS 6.2 — Core Engine & Business Rules */
 (function(root){
 'use strict';
@@ -374,7 +497,7 @@ root.HR={VERSION,collections,stages,branchData,defaultDocs,id,today,validDate,ad
 })(typeof window!=='undefined'?window:globalThis);
 </script>
 
-<script>
+<script data-baraka-module="core-validation">
 /* Local hardening, format 1. No browser-side authentication is asserted. */
 const BarakaSafety = (() => {
   'use strict';
@@ -532,7 +655,7 @@ const BarakaSafety = (() => {
 HR.validatePayload=BarakaSafety.validate;
 
 </script>
-<script>
+<script data-baraka-module="core-application">
 'use strict';
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],E=HR.esc;
 const paths={grid:'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3a4 4 0 0 1 0 8M22 21v-2a4 4 0 0 0-3-3.87M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',briefcase:'M9 7V4h6v3M3 7h18v13H3zM3 12a20 20 0 0 0 18 0M10 12h4v3h-4z',calendar:'M4 5h16v16H4zM8 3v4M16 3v4M4 10h16M8 14h2M14 14h2M8 18h2',check:'M5 12l4 4L19 6',checklist:'M9 5h12M9 12h12M9 19h12M2 4l2 2 2-3M2 11l2 2 2-3M2 18l2 2 2-3',clock:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 7v5l3 2',leave:'M4 21h16M12 21v-8M12 13C4 13 3 6 5 3c5 0 8 5 7 10ZM12 13c0-6 4-8 8-8 0 5-3 8-8 8Z',wallet:'M3 6h17v15H3zM3 6V3h14v3M15 11h7v6h-7zM18 14h1',file:'M14 2H5v20h14V7ZM14 2v6h5M8 12h8M8 16h8',chat:'M21 11a8 8 0 0 1-8 8H7l-5 3 1-6a9 9 0 1 1 18-5M7 9h9M7 13h6',chart:'M3 3v18h18M7 16v-4M12 16V7M17 16v-7',settings:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1z',help:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M9 9a3 3 0 1 1 5 2c-2 1-2 2-2 3M12 17h.01',search:'m21 21-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',plus:'M12 5v14M5 12h14',arrow:'M5 12h14M14 7l5 5-5 5',down:'M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4',up:'M12 17V5m-5 5 5-5 5 5M4 17v4h16v-4',bell:'M18 8a6 6 0 0 0-12 0c0 8-3 8-3 9h18c0-1-3-1-3-9M10 21h4',shield:'M12 3 3 7v5c0 6 9 10 9 10s9-4 9-10V7zM8 12l3 3 5-6',box:'m3 7 9-5 9 5v10l-9 5-9-5zM3 7l9 5 9-5M12 12v10M7 5l10 5',case:'M4 4h16v17H4zM8 2v4M16 2v4M8 10h8M8 14h5',cap:'m2 8 10-5 10 5-10 5ZM6 11v6c4 3 8 3 12 0v-6M22 8v9',spark:'m12 3 2 6 6 3-6 2-2 7-2-7-7-2 7-3zM20 2v4M18 4h4',close:'m6 6 12 12M6 18 18 6',menu:'M3 6h18M3 12h18M3 18h18',moon:'M21 13A9 9 0 0 1 11 3a9 9 0 1 0 10 10Z',logout:'M9 3H3v18h6M10 12h11m-5-5 5 5-5 5',copy:'M9 9h12v12H9zM5 15H3V3h12v2',print:'M6 9V2h12v7M6 17H3V9h18v8h-3M6 14h12v8H6z',history:'M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v6l3 2',edit:'m15 3 6 6-12 12H3v-6zM12 6l6 6',link:'M10 13a5 5 0 0 0 7 0l4-4a5 5 0 0 0-7-7l-2 2M14 11a5 5 0 0 0-7 0l-4 4a5 5 0 0 0 7 7l2-2',heart:'M20 5a5 5 0 0 0-8 1 5 5 0 0 0-8-1C-1 10 6 16 12 21c6-5 13-11 8-16',inbox:'M3 3h18v18H3zM3 14h5l2 3h4l2-3h5',eye:'M2 12c5-9 15-9 20 0-5 9-15 9-20 0ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',lock:'M5 10h14v12H5zM8 10V6a4 4 0 0 1 8 0v4M12 15v3',cloud:'M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z'};
@@ -1968,7 +2091,8 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
 $('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){let rect=$('#modal').getBoundingClientRect();if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom)closeModal();}});
 document.documentElement.dataset.theme=storageGet(KEY+'_theme')||'light';
 
-// Jalankan aplikasi secara otomatis saat halaman dibuka
+// Publish actual shared state only after the core script has initialized.
+BarakaRuntime.setCore(window.render, () => ({ db, route, nav }));
 render();
 </script>
 <!-- ==================== UPGRADE PACK 6.3 ==================== -->
@@ -1981,14 +2105,13 @@ render();
 [data-theme=dark] .sp-radar-row.critical{background:#261a1a}
 .sync-status-pill{font-size:11px;padding:4px 10px;border-radius:20px;background:var(--mint);color:var(--green-dark);font-weight:600}
 </style>
-<script>
-(function(){
+<script data-baraka-extension="toolbar-6.3">
+BarakaRuntime.registerModule('toolbar-6.3', function(){
   'use strict';
   const DEFAULT_CLOUD_URL = 'https://script.google.com/macros/s/AKfycbxoT0H5MRL7QQUcd7RuA_K9qwUewsAhWOOmnBDG_i_YC9tGqId5dzx3Ut42O4PymYJz/exec';
   if(!db.settings.cloudWebhookUrl) db.settings.cloudWebhookUrl = DEFAULT_CLOUD_URL;
 
-  const origRender = window.render;
-  window.render = function(){ origRender(); injectRevolutionaryToolbar(); };
+  BarakaRuntime.addRenderHook('toolbar-6.3', injectRevolutionaryToolbar);
 
   function injectRevolutionaryToolbar(){
     const contentEl = document.querySelector('#content');
@@ -2167,7 +2290,7 @@ render();
 
   document.addEventListener('input', e => { if(e.target?.id === 'smart-cv-raw') renderSmartCandidatePreview(); });
   injectRevolutionaryToolbar();
-})();
+});
 </script>
 <!-- ==================== UPGRADE PACK 7.6: EXACT CV URL VALIDATION & COMPLETE INTEGRATION ==================== -->
 <style>
@@ -2280,8 +2403,8 @@ details:has(#sync-magic-box) {
 .batch-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:7px;border-bottom:1px solid var(--line)}
 .batch-item.sent{background:var(--mint);opacity:.7}
 </style>
-<script>
-(function(){
+<script data-baraka-extension="hr-workflows-7.6">
+BarakaRuntime.registerModule('hr-workflows-7.6', function(){
   'use strict';
 
   const MONTHLY_SOP_TEMPLATES = [
@@ -3528,16 +3651,14 @@ Demikian Surat Perjanjian Kerja ini dibuat dan ditandatangani oleh kedua belah p
   });
 
   // 12. HOOK RENDER UTAMA
-  const prevRender = window.render;
-  window.render = function(){
-    prevRender();
+  BarakaRuntime.addRenderHook('hr-workflows-7.6', function() {
     enhanceBranchDistributionCard();
     enhanceWaCommunicationView();
     enhanceDashboardOverdueCard();
     enhanceAutopilotToolbar();
     enhanceEmployeeCategoryFilter();
     if(route === 'messages') updateMessage();
-  };
+  });
 
   enhanceBranchDistributionCard();
   enhanceWaCommunicationView();
@@ -3545,7 +3666,7 @@ Demikian Surat Perjanjian Kerja ini dibuat dan ditandatangani oleh kedua belah p
   enhanceAutopilotToolbar();
   enhanceEmployeeCategoryFilter();
   if(route === 'messages') updateMessage();
-})();
+});
 </script>
 <!-- ==================== UPGRADE PACK 8.0 COMPLETE: TACTICAL BAR, EX-EMPLOYEE DETECTOR, GSHEET EVAL, WORD EXIT & BA SUBSIDI SOPIR LUAR KOTA ==================== -->
 <style>
@@ -3684,8 +3805,8 @@ Demikian Surat Perjanjian Kerja ini dibuat dan ditandatangani oleh kedua belah p
 }
 </style>
 
-<script>
-(function(){
+<script data-baraka-extension="recruitment-tools-8.0">
+BarakaRuntime.registerModule('recruitment-tools-8.0', function(){
   'use strict';
 
   // DATA DEFAULT DARI SPREADSHEET SOPIR LUAR KOTA PORT PONTIANAK
@@ -4623,16 +4744,14 @@ Demikian Surat Perjanjian Kerja ini dibuat dan ditandatangani oleh kedua belah p
   });
 
   // 8. HOOK KE FUNGSI RENDER UTAMA
-  const prevRender8 = window.render;
-  window.render = function(){
-    prevRender8();
+  BarakaRuntime.addRenderHook('recruitment-tools-8.0', function() {
     injectRev8Toolbar();
     injectExBarakaBadgesOnKanban();
-  };
+  });
 
   injectRev8Toolbar();
   injectExBarakaBadgesOnKanban();
-})();
+});
 </script>
 <!-- ==================== UPGRADE PACK: SP GENERATOR, ST NO-EXPIRY, SIGNATURE LAYOUT & CUSTOM FONT ==================== -->
 <style>
@@ -4748,8 +4867,8 @@ Demikian Surat Perjanjian Kerja ini dibuat dan ditandatangani oleh kedua belah p
   }
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="official-documents">
+BarakaRuntime.registerModule('official-documents', function(){
   'use strict';
 
   let VALID_SIGNATURE_SRC = '';
@@ -5195,11 +5314,11 @@ Demikian ${subj} ini diterbitkan supaya dapat ditaati sebagaimana mestinya. Untu
   }, true);
 
   if(route === 'documents') render();
-})();
+});
 </script>
 <!-- ==================== UPGRADE PACK 8.1: RECRUITMENT BRANCH INFO & GFORM BRANCH FILTER ==================== -->
-<script>
-(function(){
+<script data-baraka-extension="forms-8.1">
+BarakaRuntime.registerModule('forms-8.1', function(){
   'use strict';
 
   function normalizeBranchName(rawBranch){
@@ -5582,12 +5701,12 @@ Demikian ${subj} ini diterbitkan supaya dapat ditaati sebagaimana mestinya. Untu
   }, true);
 
   if(route === 'messages' || route === 'recruitment') render();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 8.1 ==================== -->
 <!-- ==================== UPGRADE PACK 8.2: UNIVERSAL CLOUD SYNC ADAPTER ==================== -->
-<script>
-(function(){
+<script data-baraka-extension="cloud-8.2">
+BarakaRuntime.registerModule('cloud-8.2', function(){
   'use strict';
 
   let syncBusy = false;
@@ -5782,7 +5901,7 @@ Demikian ${subj} ini diterbitkan supaya dapat ditaati sebagaimana mestinya. Untu
   } catch(e){}
 
   render();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 8.2 ==================== -->
 <!-- ==================== BARAKA PEOPLEOS 9.0 OFFICIAL RELEASE: TECHNICAL AUDIT & CALENDAR HR FIX ==================== -->
@@ -5860,8 +5979,8 @@ Demikian ${subj} ini diterbitkan supaya dapat ditaati sebagaimana mestinya. Untu
   border: 1px solid #86efac;
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="architecture-9.0">
+BarakaRuntime.registerModule('architecture-9.0', function(){
   'use strict';
 
   /* ============================================================================
@@ -6482,19 +6601,17 @@ Demikian ${subj} ini diterbitkan supaya dapat ditaati sebagaimana mestinya. Untu
     }
   });
 
-  const prevRenderV9 = window.render;
-  window.render = function() {
-    prevRenderV9();
+  BarakaRuntime.addRenderHook('architecture-9.0', function() {
     injectAuditTestButton();
-  };
+  });
 
   injectAuditTestButton();
-})();
+});
 </script>
 <!-- ==================== END BARAKA PEOPLEOS 9.0 OFFICIAL RELEASE ==================== -->
 <!-- ==================== UPGRADE PACK 9.1: ANTI FAILED-TO-FETCH CLOUD BRIDGE ==================== -->
-<script>
-(function(){
+<script data-baraka-extension="cloud-9.1">
+BarakaRuntime.registerModule('cloud-9.1', function(){
   'use strict';
 
   // Helper JSONP untuk menembus blokir CORS "Origin: null" pada file:// lokal jika Apps Script mendukung parameter ?callback=
@@ -6755,7 +6872,7 @@ Demikian ${subj} ini diterbitkan supaya dapat ditaati sebagaimana mestinya. Untu
 
   try { cloudSetState({ status: 'Siap Sinkron' }); } catch (e) {}
   render();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 9.1 ==================== -->
 <!-- ==================== UPGRADE PACK 9.2: WORKFLOW ENGINE & UNIFIED BACKUP SCHEMA ==================== -->
@@ -6815,8 +6932,8 @@ Demikian ${subj} ini diterbitkan supaya dapat ditaati sebagaimana mestinya. Untu
 }
 .bk-stage small { display: block; font-size: 9.5px; opacity: 0.85; margin-top: 2px; }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="workflow-backup-9.2">
+BarakaRuntime.registerModule('workflow-backup-9.2', function(){
   'use strict';
 
   /* ============================================================================
@@ -7367,20 +7484,18 @@ Demikian ${subj} ini diterbitkan supaya dapat ditaati sebagaimana mestinya. Untu
     };
   }
 
-  const prevRender92 = window.render;
-  window.render = function() {
-    prevRender92();
+  BarakaRuntime.addRenderHook('workflow-backup-9.2', function() {
     injectV92Buttons();
-  };
+  });
 
   injectV92Buttons();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 9.2 ==================== -->
 <!-- ==================== UPGRADE PACK 9.3: ZERO-CORS ONEDRIVE VAULT & UNIVERSAL CLOUD SYNC ==================== -->
 <script src="Baraka_OneDrive_Sync_Vault.js" onerror="window.__barakaLocalVaultMissing=true"></script>
-<script>
-(function(){
+<script data-baraka-extension="vault-9.3">
+BarakaRuntime.registerModule('vault-9.3', function(){
   'use strict';
 
   const VAULT_FILENAME = 'Baraka_OneDrive_Sync_Vault.js';
@@ -7727,7 +7842,7 @@ function doPost(e) {
       toast(err.message || 'Gagal menjalankan aksi.', true);
     }
   });
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 9.3 ==================== -->
 <!-- ==================== UPGRADE PACK 9.4: HRD EXECUTION CENTER, GLOBAL FILTER, BULK ACTIONS & PRIVACY MASK ==================== -->
@@ -7814,8 +7929,8 @@ function doPost(e) {
 }
 .resume-work-pill:hover { background: var(--green); color: #fff; }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="execution-center-9.4">
+BarakaRuntime.registerModule('execution-center-9.4', function(){
   'use strict';
 
   /* ============================================================================
@@ -8331,17 +8446,15 @@ function doPost(e) {
     }
   });
 
-  const prevRender94 = window.render;
-  window.render = function() {
-    prevRender94();
+  BarakaRuntime.addRenderHook('execution-center-9.4', function() {
     applyPrivacyBodyClass();
     injectGlobalConsistentFilterBar();
     injectDashboardExecutionCenter();
-  };
+  });
 
   injectGlobalConsistentFilterBar();
   injectDashboardExecutionCenter();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 9.4 ==================== -->
 <!-- ==================== UPGRADE PACK 9.5: CLEAN LAYOUT, UNIFIED CONTROL DOCK & MINIMIZABLE CARDS ==================== -->
@@ -8533,8 +8646,8 @@ function doPost(e) {
   margin-bottom: 12px;
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="smart-dock-9.5">
+BarakaRuntime.registerModule('smart-dock-9.5', function(){
   'use strict';
 
   const MIN_STATE_KEY = 'baraka_minimized_cards_v95';
@@ -8858,21 +8971,19 @@ function doPost(e) {
     }
   });
 
-  const prevRender95 = window.render;
-  window.render = function() {
-    prevRender95();
+  BarakaRuntime.addRenderHook('smart-dock-9.5', function() {
     injectUnifiedSmartDock();
     enhanceCardsWithMinimizeAndDeclutter();
-  };
+  });
 
   injectUnifiedSmartDock();
   enhanceCardsWithMinimizeAndDeclutter();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 9.5 ==================== -->
 <!-- ==================== UPGRADE PACK 9.6: PERMANENT SCHEMA COMPATIBILITY & AUTO-HEAL ==================== -->
-<script>
-(function(){
+<script data-baraka-extension="schema-9.6">
+BarakaRuntime.registerModule('schema-9.6', function(){
   'use strict';
 
   // Pastikan HR.VERSION selalu kompatibel dengan semua paket maupun Self-Test Suite
@@ -8920,7 +9031,7 @@ function doPost(e) {
   } else if (db) {
     db.schemaVersion = 9.0;
   }
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 9.6 ==================== -->
 <!-- ==================== UPGRADE PACK 9.7: LARGE OVERLAPPING SIGNATURE & STAMP ==================== -->
@@ -8964,8 +9075,8 @@ function doPost(e) {
   }
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="signature-9.7">
+BarakaRuntime.registerModule('signature-9.7', function(){
   'use strict';
 
   // Auto-crop margin transparan berlebih pada gambar tanda tangan agar tampak jauh lebih besar & tegas
@@ -9052,14 +9163,12 @@ function doPost(e) {
     };
   }
 
-  const prevRender97 = window.render;
-  window.render = function() {
-    prevRender97();
+  BarakaRuntime.addRenderHook('signature-9.7', function() {
     setTimeout(autoCropSignatureImage, 50);
-  };
+  });
 
   setTimeout(autoCropSignatureImage, 80);
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 9.7 ==================== -->
 <!-- ==================== UPGRADE PACK 9.8: INTERACTIVE DRAGGABLE & RESIZABLE SIGNATURE ==================== -->
@@ -9138,8 +9247,8 @@ function doPost(e) {
   box-shadow: 0 8px 24px rgba(15, 99, 69, 0.22) !important;
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="signature-customizer-9.8">
+BarakaRuntime.registerModule('signature-customizer-9.8', function(){
   'use strict';
 
   const SIG_CFG_KEY = 'baraka_sig_custom_cfg_v99';
@@ -9341,17 +9450,15 @@ function doPost(e) {
     };
   }
 
-  const prevRender98 = window.render;
-  window.render = function() {
-    prevRender98();
+  BarakaRuntime.addRenderHook('signature-customizer-9.8', function() {
     injectSigCustomizerPanel();
     applySignatureStylesToDOM();
     setTimeout(applySignatureStylesToDOM, 80);
-  };
+  });
 
   injectSigCustomizerPanel();
   applySignatureStylesToDOM();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 9.8 ==================== -->
 <!-- ==================== UPGRADE PACK 10.0: AUTO-GMAIL DISPATCHER TO BRANCH OFFICES ==================== -->
@@ -9413,8 +9520,8 @@ function doPost(e) {
   font-size: 12px;
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="gmail-10.0">
+BarakaRuntime.registerModule('gmail-10.0', function(){
   'use strict';
 
   const BRANCH_EMAILS_KEY = 'baraka_branch_emails_v10';
@@ -9752,19 +9859,17 @@ if (body.action === 'send_branch_email') {
   });
 
   // Integrasikan daftar email cabang ke dalam Unified Backup Schema (Upgrade Pack 9.2)
-  const prevRender100 = window.render;
-  window.render = function() {
-    prevRender100();
+  BarakaRuntime.addRenderHook('gmail-10.0', function() {
     injectGmailDispatcherPanel();
-  };
+  });
 
   injectGmailDispatcherPanel();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.0 ==================== -->
 <!-- ==================== UPGRADE PACK 10.1: BRANCH ADDRESS UPDATE ==================== -->
-<script>
-(function(){
+<script data-baraka-extension="branch-addresses-10.1">
+BarakaRuntime.registerModule('branch-addresses-10.1', function(){
   'use strict';
   const updatedAddresses = {
     'Pontianak Barat': 'Jl. Komodor Yos Sudarso No.M2, Sungai Jawi Luar, Kec. Pontianak Bar., Kota Pontianak, Kalimantan Barat 78113',
@@ -9798,12 +9903,10 @@ if (body.action === 'send_branch_email') {
   }
 
   applyBranchAddressUpdate();
-  const prevRender101 = window.render;
-  window.render = function() {
+  BarakaRuntime.addRenderHook('branch-addresses-10.1', function() {
     applyBranchAddressUpdate();
-    prevRender101();
-  };
-})();
+  }, true);
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.1 ==================== -->
 <!-- ==================== UPGRADE PACK 10.2: EXIT CLEARANCE GRID & KACAB CHECKBOX ==================== -->
@@ -9857,8 +9960,8 @@ if (body.action === 'send_branch_email') {
   }
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="exit-clearance-10.2">
+BarakaRuntime.registerModule('exit-clearance-10.2', function(){
   'use strict';
 
   // Override fungsi pembangun HTML Exit Clearance agar memiliki tabel bergaris penuh & kolom ceklis Kacab
@@ -10012,7 +10115,7 @@ if (body.action === 'send_branch_email') {
       });
     }
   };
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.2 ==================== -->
 <!-- ==================== UPGRADE PACK 10.3: STRICT EXIT CLEARANCE BORDER GRID & KACAB CHECKLIST ==================== -->
@@ -10086,8 +10189,8 @@ article.paper table.exit-clearance-table td {
   }
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="exit-grid-10.3">
+BarakaRuntime.registerModule('exit-grid-10.3', function(){
   'use strict';
 
   // Generator tabel khusus dengan garis kotak tegas per poin + kolom Ceklis Kacab
@@ -10239,7 +10342,7 @@ article.paper table.exit-clearance-table td {
     }
   }, true);
 
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.3 ==================== -->
 <!-- ==================== UPGRADE PACK 10.4: FIT A4 EXIT CLEARANCE (NO KATEGORI COLUMN) ==================== -->
@@ -10314,8 +10417,8 @@ article.paper table.exit-clearance-table td {
   }
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="exit-a4-10.4">
+BarakaRuntime.registerModule('exit-a4-10.4', function(){
   'use strict';
 
   // Render tabel 5 kolom pas A4 tanpa kolom Kategori
@@ -10452,7 +10555,7 @@ article.paper table.exit-clearance-table td {
       </article>
     `;
   };
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.4 ==================== -->
 <!-- ==================== UPGRADE PACK 10.5: FIX TABLE TEXT WRAPPING INSIDE CELLS ==================== -->
@@ -10518,8 +10621,8 @@ article.paper table.exit-clearance-table td {
   }
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="exit-wrap-10.5">
+BarakaRuntime.registerModule('exit-wrap-10.5', function(){
   'use strict';
 
   // Perbarui generator tabel dengan proporsi lebar kolom yang pas & white-space:normal langsung di inline style
@@ -10565,7 +10668,7 @@ article.paper table.exit-clearance-table td {
       </table>
     `;
   };
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.5 ==================== -->
 <!-- ==================== UPGRADE PACK 10.6: MEETING PARTICIPANTS CHECKLIST, SMART AGENDA & BEST REGARDS FOOTER ==================== -->
@@ -10647,8 +10750,8 @@ article.paper table.exit-clearance-table td {
   border-color: var(--green);
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="meeting-10.6">
+BarakaRuntime.registerModule('meeting-10.6', function(){
   'use strict';
 
   const PARTICIPANT_ROLES = [
@@ -10940,25 +11043,23 @@ article.paper table.exit-clearance-table td {
     }
   });
 
-  const prevRender106 = window.render;
-  window.render = function() {
-    prevRender106();
+  BarakaRuntime.addRenderHook('meeting-10.6', function() {
     if (route === 'messages') {
       syncMeetingFormUI();
       updateMessage();
     }
-  };
+  });
 
   if (route === 'messages') {
     syncMeetingFormUI();
     updateMessage();
   }
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.6 ==================== -->
 <!-- ==================== UPGRADE PACK 10.7: FIX EXIT CLEARANCE EFFECTIVE DATE & DYNAMIC FORM BINDING ==================== -->
-<script>
-(function(){
+<script data-baraka-extension="exit-date-10.7">
+BarakaRuntime.registerModule('exit-date-10.7', function(){
   'use strict';
 
   let lastSelectedExitDate = '';
@@ -11144,7 +11245,7 @@ article.paper table.exit-clearance-table td {
       </article>
     `;
   };
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.7 ==================== -->
 <!-- ==================== UPGRADE PACK 10.8: CANDIDATE PENDING / HOLD & BULK TALENT POOL ==================== -->
@@ -11185,8 +11286,8 @@ article.paper table.exit-clearance-table td {
   color: #fcd34d;
 }
 </style>
-<script>
-(function(){
+<script data-baraka-extension="recruitment-hold-10.8">
+BarakaRuntime.registerModule('recruitment-hold-10.8', function(){
   'use strict';
 
   // Pastikan 'Pending / Hold' terdaftar di HR.stages
@@ -11443,14 +11544,12 @@ article.paper table.exit-clearance-table td {
     }
   }, true);
 
-  const prevRender108 = window.render;
-  window.render = function() {
-    prevRender108();
+  BarakaRuntime.addRenderHook('recruitment-hold-10.8', function() {
     enhanceRecruitmentHoldControls();
-  };
+  });
 
   enhanceRecruitmentHoldControls();
-})();
+});
 </script>
 <!-- ==================== END UPGRADE PACK 10.8 ==================== -->
 <!-- ==================== BARAKA PEOPLEOS 10.9 · OPS & ATTENDANCE PARSER STAGE 1 ==================== -->
@@ -11518,8 +11617,8 @@ article.paper table.exit-clearance-table td {
 
 @media(max-width:850px){.ops-upload-grid{grid-template-columns:1fr}.ops-file-meta{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-file-map{grid-template-columns:1fr}.ops-controls .field{max-width:none;flex:1}}
 </style>
-<script>
-(function(){
+<script data-baraka-extension="ops-10.9">
+BarakaRuntime.registerModule('ops-10.9', function(){
 'use strict';
 
 const OPS_STATE={selectedDate:HR.today(),items:[],lastValidation:null};
@@ -11986,7 +12085,7 @@ document.addEventListener('change',async event=>{
 
 // Re-render the shell once so the new navigation entry is visible. Existing PeopleOS routes remain unchanged.
 render();
-})();
+});
 </script>
 <!-- ==================== END BARAKA PEOPLEOS 10.9 · STAGE 1 ==================== -->
 
