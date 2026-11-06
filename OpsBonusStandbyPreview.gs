@@ -289,9 +289,6 @@ function bonusPreviewCompare_(r, numberRow, dataRow, displayNumberRow, displayDa
       if (kind === 'number' || kind === 'decimal') return bonusPreviewNormNumber_(value, kind === 'decimal');
       if (kind === 'optional' && String(value == null ? '' : value).trim() === '-') return '';
       const normalized = bonusPreviewNormText_(value);
-      if (key === 'tujuan' && Object.prototype.hasOwnProperty.call(destinationMap || {}, normalized)) {
-        return bonusPreviewNormText_(destinationMap[normalized]);
-      }
       return normalized;
     };
     try {
@@ -312,10 +309,6 @@ function bonusPreviewCompare_(r, numberRow, dataRow, displayNumberRow, displayDa
   }
   bonusPreviewFields_().forEach(function (f) {
     let expected = r[f[0]];
-    if (f[0] === 'tujuan') {
-      const code = bonusPreviewNormText_(expected);
-      if (Object.prototype.hasOwnProperty.call(destinationMap || {}, code)) expected = destinationMap[code];
-    }
     const cell = cells ? cells[f[2] - 1] : { value: dataRow[f[2] - 1], display: displayDataRow[f[2] - 1], a1: String.fromCharCode(64 + f[2]) };
     // Nomor resi pada template berada di baris atas.
     if (!cells && f[0] === 'noResi') cell.value = numberRow[4];
@@ -446,7 +439,6 @@ function bonusPreviewInspectTarget_(sheet, records, timezone, dateISO, destinati
     const mainChanges = [], invalid = [];
     bonusPreviewFields_().filter(function (f) { return f[2] <= 16; }).forEach(function (f) {
       let value = r[f[0]];
-      if (f[0] === 'tujuan' && Object.prototype.hasOwnProperty.call(destinationMap || {}, bonusPreviewNormText_(value))) value = destinationMap[bonusPreviewNormText_(value)];
       const cell = slot.cells[f[2] - 1];
       if (!empty(cell.value) || cell.formula) invalid.push(f[1] + ': sel tujuan tidak kosong atau berisi rumus.');
       if ((f[3] === 'number' || f[3] === 'decimal') && r.sourceValues && !String(r.sourceValues[f[2] - 1]).trim()) invalid.push(f[1] + ': angka sumber kosong belum membuktikan nol.');
