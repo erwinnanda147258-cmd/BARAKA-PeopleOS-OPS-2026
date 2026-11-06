@@ -347,7 +347,7 @@ function scanAllBranches_(config, dateISO, inspectTargets) {
   const fingerprintParts = ['date=' + dateISO, 'config=' + Number(config.version || 0)];
   let readyCount = 0, blockedCount = 0, missingCount = 0, newDatotRows = 0, newAttendanceRows = 0, duplicateRows = 0, conflictRows = 0;
   (config.branches || []).forEach(function (branch) {
-    const branchRuntime = Object.assign({}, branch, { destinationMap: config.destinationMap || BARAKA_OPS.DEFAULT_DESTINATION_MAP });
+    const branchRuntime = Object.assign({}, branch);
     const bp = { branchId: branch.branchId, branchName: branch.branchName, config: branchRuntime, date: dateISO, folderStatus: 'ready', datot: null, attendance: null };
     if (!branch.uploadFolderId) {
       bp.folderStatus = 'upload_folder_not_configured';
@@ -432,16 +432,14 @@ function inspectOneFile_(branch, dateISO, day, kind, files, inspectTargets) {
       if (!branch.opsCodes || !branch.opsCodes.length) throw new Error('Daftar kode OPS untuk cabang ini belum dikonfigurasi.');
       if (branch.opsCodes.indexOf(parsed.branchCode.toUpperCase()) < 0) throw new Error('Kode OPS ' + parsed.branchCode + ' tidak terdaftar untuk ' + branch.branchName + '. Kode terdaftar: ' + branch.opsCodes.join(', '));
       if (parsed.warnings.length) throw new Error(parsed.warnings.join(' '));
-      const destinationResult = resolveDestinations_(parsed.records, branch.destinationMap || BARAKA_OPS.DEFAULT_DESTINATION_MAP);
-      if (destinationResult.unmapped.length) throw new Error('Kode tujuan belum memiliki mapping nama tujuan: ' + destinationResult.unmapped.join(', ') + '. Lengkapi mapping tujuan di konfigurasi.');
-      out.unmappedDestinations = [];
-      out.sampleRecords = destinationResult.records.slice(0, 3).map(function (r) { return { noResi: r.noResi, pengirim: r.pengirim, penerima: r.penerima, tujuan: r.tujuan, kg: r.kg, totalBayar: r.tunai + r.tujuanBayar + r.vaPengirim + r.vaTujuan, status: r.status }; });
+      // Kode tujuan disalin apa adanya dari kolom Tujuan pada file Datot.
+      out.sampleRecords = parsed.records.slice(0, 3).map(function (r) { return { noResi: r.noResi, pengirim: r.pengirim, penerima: r.penerima, tujuan: r.tujuan, kg: r.kg, totalBayar: r.tunai + r.tujuanBayar + r.vaPengirim + r.vaTujuan, status: r.status }; });
       if (inspectTargets) {
         if (!branch.bonusSpreadsheetId) throw new Error('Spreadsheet Bonus Standby belum dikonfigurasi.');
         const ss = SpreadsheetApp.openById(branch.bonusSpreadsheetId);
         const sheet = ss.getSheetByName(day);
         if (!sheet) throw new Error('Tab bonus tanggal ' + day + ' tidak ditemukan.');
-        const check = inspectDatotTarget_(sheet, destinationResult.records);
+        const check = inspectDatotTarget_(sheet, parsed.records);
         out.newCount = check.newRows.length; out.duplicateCount = check.duplicates; out.conflictCount = check.conflicts.length;
         out.conflicts = check.conflicts.slice(0, 10);
         if (check.conflicts.length) throw new Error('Ada nomor resi yang sudah tercatat dengan isi berbeda: ' + check.conflicts.slice(0, 5).join(', '));
@@ -845,13 +843,12 @@ function dateTimeComparable_(value) {
 function commitDatot_(branchPlan) {
   const b = branchPlan.config;
   const parsed = parseDatotHtml_(DriveApp.getFileById(branchPlan.datot.fileId).getBlob().getDataAsString('UTF-8'), branchPlan.datot.fileName);
-  const destinationResult = resolveDestinations_(parsed.records, b.destinationMap || BARAKA_OPS.DEFAULT_DESTINATION_MAP);
-  if (destinationResult.unmapped.length) throw new Error('Kode tujuan belum dipetakan: ' + destinationResult.unmapped.join(', '));
+  // Pertahankan kode tujuan persis seperti yang tercantum pada file Datot.
   const ss = SpreadsheetApp.openById(b.bonusSpreadsheetId);
   const day = String(Number(branchPlan.date.slice(-2)));
   const sheet = ss.getSheetByName(day);
   if (!sheet) throw new Error('Tab bonus tanggal ' + day + ' tidak ditemukan.');
-  const check = inspectDatotTarget_(sheet, destinationResult.records);
+  const check = inspectDatotTarget_(sheet, parsed.records);
   if (check.conflicts.length) throw new Error('Konflik nomor resi: ' + check.conflicts.slice(0, 5).join(', '));
   if (!check.newRows.length) return { ok: true, status: 'Semua resi sudah tercatat.', added: 0, skipped: check.duplicates };
   const last = findLastNonEmptyRow_(sheet, BARAKA_OPS.BONUS_FIRST_ROW, 1, BARAKA_OPS.BONUS_COLS);
